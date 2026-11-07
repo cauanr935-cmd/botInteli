@@ -2,6 +2,7 @@
 // Toda mensagem do bot sai por sendGuarded.
 import { monthKey } from "../budget/month";
 import type { Repo } from "../db/repo";
+import { hashWaId } from "../lib/hash";
 import type { Logger } from "../lib/logger";
 
 /** 23h30: 30 min de margem sobre a janela de 24h da Meta. */
@@ -35,11 +36,6 @@ export type SendResult =
   | { status: "blocked_window" }
   | { status: "blocked_template" }
   | { status: "error"; code: string };
-
-async function hashWaId(waId: string): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(waId));
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 function isTemplate(m: OutboundMessage): boolean {
   return String(m.type).trim().toLowerCase() === "template" || "template" in m;

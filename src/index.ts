@@ -1,6 +1,8 @@
 import { handleAdmin, type AdminDeps } from "./admin/budget";
 import { handleStatusEvent } from "./budget/status";
 import { loadConfig } from "./config";
+import { handleIncomingMessage } from "./conversation/engine";
+import { sendGuarded } from "./whatsapp/client";
 import { SupabaseRepo } from "./db/supabase-repo";
 import type { Repo } from "./db/repo";
 import { createLogger, type Logger } from "./lib/logger";
@@ -51,7 +53,19 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
       onEvent: async (ev) => {
         if (ev.type === "status") {
           await handleStatusEvent(ev, { repo, logger, phoneNumberId: cfg.phoneNumberId });
+          return;
         }
+        // Mensagens: motor de conversa -> decide -> sendGuarded (R1/R2).
+        await handleIncomingMessage(ev, {
+          repo, logger,
+          maxPerDay: cfg.maxBotMsgsPerUserPerDay,
+          maxPer10Min: cfg.maxBotMsgsPerUserPer10Min,
+          send: (message) =>
+            sendGuarded(message, {
+              repo, logger, phoneNumberId: cfg.phoneNumberId, whatsappToken: cfg.whatsappToken,
+              graphApiVersion: cfg.graphApiVersion, stopAt: cfg.stopAt, timezone: cfg.metaAccountTimezone,
+            }),
+        });
       },
       admin: {
         adminToken: cfg.adminToken, repo, logger, phoneNumberId: cfg.phoneNumberId,

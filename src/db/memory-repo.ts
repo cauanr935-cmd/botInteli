@@ -1,6 +1,6 @@
 import { MAX_STOP_AT } from "../config";
 import type {
-  BudgetRow, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  BudgetRow, ConversationFields, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 export interface MemoryOutboundRow extends OutboundLogEntry {
@@ -16,6 +16,7 @@ export class MemoryRepo implements Repo {
   readonly budgets = new Map<string, BudgetRow & { warned: boolean; tripLogged: boolean }>();
   readonly locks = new Map<string, ManualLock>();
   readonly outbound: MemoryOutboundRow[] = [];
+  readonly conversations = new Map<string, StoredConversation>();
 
   async claimMessage(key: string, receivedAt: Date): Promise<boolean> {
     // Síncrono dentro do método: check-and-set atômico no event loop.
@@ -32,6 +33,25 @@ export class MemoryRepo implements Repo {
   }
   async getLastUserMessageAt(waId: string): Promise<Date | null> {
     return this.users.get(waId) ?? null;
+  }
+
+  // ---- Etapa 3: conversa ----
+  async getConversation(waId: string): Promise<StoredConversation> {
+    return (
+      this.conversations.get(waId) ?? {
+        state: "NEW", previousState: null, hintSentInState: false, optedOutAt: null, version: 0,
+      }
+    );
+  }
+  async saveConversation(waId: string, expectedVersion: number, next: ConversationFields): Promise<boolean> {
+    // Sem await entre ler e escrever: compare-and-set atômico.
+    const cur = this.conversations.get(waId)?.version ?? 0;
+    if (cur !== expectedVersion) return false;
+    this.conversations.set(waId, { ...next, version: cur + 1 });
+    return true;
+  }
+  async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
+    return this.outbound.filter((r) => r.waIdHash === waIdHash && r.reservedAt >= since).map((r) => r.reservedAt);
   }
 
   // ---- orçamento: mesma semântica da função SQL (sem await entre ler e escrever) ----

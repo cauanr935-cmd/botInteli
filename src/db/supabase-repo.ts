@@ -1,5 +1,5 @@
 import type {
-  BudgetRow, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  BudgetRow, ConversationFields, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 /** Repo sobre a API REST (PostgREST) do Supabase. */
@@ -57,6 +57,51 @@ export class SupabaseRepo implements Repo {
     const rows = (await res.json()) as { last_user_message_at: string }[];
     const r = rows[0];
     return r ? new Date(r.last_user_message_at) : null;
+  }
+
+  // ---- Etapa 3: conversa ----
+  async getConversation(waId: string): Promise<StoredConversation> {
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&select=state,previous_state,hint_sent_in_state,opted_out_at,version`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase getConversation falhou: ${res.status}`);
+    const r = ((await res.json()) as Record<string, unknown>[])[0];
+    if (!r) return { state: "NEW", previousState: null, hintSentInState: false, optedOutAt: null, version: 0 };
+    return {
+      state: String(r.state),
+      previousState: (r.previous_state as string | null) ?? null,
+      hintSentInState: r.hint_sent_in_state === true,
+      optedOutAt: r.opted_out_at ? new Date(r.opted_out_at as string) : null,
+      version: Number(r.version),
+    };
+  }
+
+  async saveConversation(waId: string, expectedVersion: number, n: ConversationFields): Promise<boolean> {
+    // PATCH condicionado à versão: só uma de duas mensagens simultâneas vence.
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&version=eq.${expectedVersion}`,
+      {
+        method: "PATCH",
+        headers: this.headers({ Prefer: "return=representation" }),
+        body: JSON.stringify({
+          state: n.state, previous_state: n.previousState, hint_sent_in_state: n.hintSentInState,
+          opted_out_at: n.optedOutAt ? n.optedOutAt.toISOString() : null, version: expectedVersion + 1,
+        }),
+      },
+    );
+    if (!res.ok) throw new Error(`supabase saveConversation falhou: ${res.status}`);
+    const rows = (await res.json()) as unknown[];
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/outbound_log?wa_id_hash=eq.${encodeURIComponent(waIdHash)}&reserved_at=gte.${encodeURIComponent(since.toISOString())}&select=reserved_at&limit=1000`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase listOutboundSince falhou: ${res.status}`);
+    return ((await res.json()) as { reserved_at: string }[]).map((r) => new Date(r.reserved_at));
   }
 
   // ---- Etapa 2: orçamento ----

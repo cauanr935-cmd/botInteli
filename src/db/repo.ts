@@ -10,6 +10,25 @@ export interface Repo extends BudgetRepo {
   /** Atualiza last_user_message_at do usuário (nunca regride). */
   touchUser(waId: string, at: Date): Promise<void>;
   getLastUserMessageAt(waId: string): Promise<Date | null>;
+  /** Etapa 3: estado persistido da conversa (padrão NEW quando não há registro). */
+  getConversation(waId: string): Promise<StoredConversation>;
+  /**
+   * Compare-and-set: grava o novo estado só se a versão ainda for `expectedVersion`.
+   * Devolve false se outra mensagem mudou o estado antes (evita resposta dupla em rajadas).
+   */
+  saveConversation(waId: string, expectedVersion: number, next: ConversationFields): Promise<boolean>;
+  /** Instantes (reserved_at) das mensagens do bot para a pessoa desde `since`. */
+  listOutboundSince(waIdHash: string, since: Date): Promise<Date[]>;
+}
+
+export interface ConversationFields {
+  state: string;
+  previousState: string | null;
+  hintSentInState: boolean;
+  optedOutAt: Date | null;
+}
+export interface StoredConversation extends ConversationFields {
+  version: number;
 }
 
 /** ---- Etapa 2: orçamento (R1) ---- */
