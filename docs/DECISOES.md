@@ -78,3 +78,11 @@ Decisões tomadas pelos agentes sem consultar o humano. Formato: data · etapa �
 - **Adaptador HTTP genérico** (não existe `docs/ANALISADOR.md`): `POST ANALYZER_API_URL` com corpo = bytes do áudio, `Content-Type` = mime, `Authorization: Bearer ANALYZER_API_KEY`. Texto do resultado vem de `text|result|summary|message|analysis` (string) ou o JSON compacto; cortado em 1024 caracteres. Retenta (até 2 vezes, 500 ms e 1 s) em rede, timeout, 5xx, 429 e 408; 4xx não repete.
 - **Sem R2 (`AUDIOS`) configurado**: `index.ts` registra erro `r2_binding_missing` e o motor mantém o comportamento da Etapa 3 (áudio só muda o estado). Deploy deve garantir o binding (já está no `wrangler.toml`).
 - **Machine**: a transição de áudio em `AWAIT_AUDIO` passou a respeitar os limites por pessoa (resultado `limited`).
+
+## 2026-11-07 — Etapa 7 (operação e deploy)
+
+- **Cron diário** (`src/ops/scheduled.ts`): quatro tarefas independentes (uma falhar não impede as outras): `ping` (SELECT de 1 linha em `users`, evita a pausa do plano gratuito), apagar `processed_messages` com mais de 7 dias, destravar conversas presas e logar `cron_budget_usage` (mês, `reserved_count`, `stop_at`, `tripped`). O cron **nunca envia mensagem** (R1) e não faz reserva.
+- **Conversa presa em `PROCESSING_AUDIO`** (observação do verificador da Etapa 6): se o Worker morrer no meio do pipeline, o cron devolve a pessoa a `AWAIT_AUDIO` (flag de dica zerado, `version+1`) quando o estado não muda há mais de 10 minutos (`STUCK_PROCESSING_MS`). Silencioso: sem aviso à pessoa (custaria mensagem); ela simplesmente pode mandar outro áudio. Como o cron é diário, a espera real é de até ~24 h; aceitável porque o caso é raro e a pessoa fica em silêncio, não gasta mensagens. Para isso a migração `0008_housekeeping.sql` adiciona `users.state_changed_at` (gatilho atualiza quando `state` muda) e a função `release_stuck_processing(p_before)`. `MemoryRepo` tem relógio injetável (`clock`) para o mesmo comportamento.
+- **Novos métodos do `Repo`**: `ping`, `deleteProcessedBefore`, `releaseStuckProcessing`.
+- **Build offline**: `npm run build` = `wrangler deploy --dry-run --outdir dist` (não precisa de credenciais). O teste C7.2 roda o mesmo comando com `CLOUDFLARE_API_TOKEN` removido do ambiente.
+- **Cron em UTC** (`0 6 * * *`): sem impacto no orçamento; a virada do mês continua no fuso da conta Meta.

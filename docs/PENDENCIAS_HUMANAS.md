@@ -43,3 +43,7 @@ Coisas que só uma pessoa da equipe pode fazer. Os agentes acrescentam itens aqu
 - [ ] Aplicar `supabase/migrations/0007_audios.sql` no Supabase.
 - [ ] Criar o bucket R2 `bot-whatsapp-audios` (binding `AUDIOS` já está no `wrangler.toml`) e definir política de retenção dos áudios (dado pessoal).
 - [ ] Fornecer o contrato da API de análise (formato de envio e de resposta). Sem `docs/ANALISADOR.md`, vale o adaptador genérico em `src/audio/analyzer.ts` (`HttpAudioAnalyzer`); ajustar só esse arquivo. Definir também `ANALYZER_API_URL` e `ANALYZER_API_KEY`.
+
+## Etapa 7 — Operação
+- [ ] Aplicar `supabase/migrations/0008_housekeeping.sql` no Supabase (cron depende de `release_stuck_processing`).
+- [ ] Seguir `docs/DEPLOY.md` (contas, secrets, bucket, webhook, número de teste, chip) e o checklist de produção.

@@ -290,4 +290,25 @@ export class SupabaseRepo implements Repo {
     });
     if (!res.ok) throw new Error(`supabase finishAudio falhou: ${res.status}`);
   }
+
+  // ---- Etapa 7: operação ----
+  async ping(): Promise<void> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/users?select=wa_id&limit=1`, { headers: this.headers() });
+    if (!res.ok) throw new Error(`supabase ping falhou: ${res.status}`);
+  }
+
+  async deleteProcessedBefore(before: Date): Promise<number> {
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/processed_messages?received_at=lt.${encodeURIComponent(before.toISOString())}`,
+      { method: "DELETE", headers: this.headers({ Prefer: "return=representation" }) },
+    );
+    if (!res.ok) throw new Error(`supabase deleteProcessedBefore falhou: ${res.status}`);
+    const rows = (await res.json()) as unknown[];
+    return Array.isArray(rows) ? rows.length : 0;
+  }
+
+  async releaseStuckProcessing(before: Date): Promise<number> {
+    const n = await this.rpc<number | null>("release_stuck_processing", { p_before: before.toISOString() });
+    return typeof n === "number" ? n : 0;
+  }
 }

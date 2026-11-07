@@ -10,6 +10,7 @@ import { SupabaseRepo } from "./db/supabase-repo";
 import type { Repo } from "./db/repo";
 import { ContentProvider } from "./services/provider";
 import type { AudioEvent } from "./whatsapp/types";
+import { runScheduled } from "./ops/scheduled";
 import { createLogger, type Logger } from "./lib/logger";
 import { handleVerification, handleWebhookPost, type EventHandler, type WaitUntilCtx } from "./webhook/handler";
 
@@ -119,10 +120,14 @@ export default {
     return route(request, safeCtx, deps);
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
-    // Cron diário: tarefas das próximas etapas. Por ora só valida a config.
+    // Cron diário (C7.1): consulta leve, limpeza de idempotência, destrava de áudio e uso do mês.
     const logger = createLogger();
     try {
-      loadConfig(env);
+      const cfg = loadConfig(env);
+      await runScheduled({
+        repo: new SupabaseRepo(cfg.supabaseUrl, cfg.supabaseServiceKey), logger,
+        phoneNumberId: cfg.phoneNumberId, stopAt: cfg.stopAt, timezone: cfg.metaAccountTimezone,
+      });
     } catch (e) {
       logger.log("error", "config_invalid", { message: (e as Error).message });
     }

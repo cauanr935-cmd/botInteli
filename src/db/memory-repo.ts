@@ -49,8 +49,37 @@ export class MemoryRepo implements Repo {
     // Sem await entre ler e escrever: compare-and-set atômico.
     const cur = this.conversations.get(waId)?.version ?? 0;
     if (cur !== expectedVersion) return false;
+    const prev = this.conversations.get(waId);
+    if (!prev || prev.state !== next.state) this.stateChangedAt.set(waId, this.clock());
     this.conversations.set(waId, { ...next, version: cur + 1 });
     return true;
+  }
+  // ---- Etapa 7: operação ----
+  /** Relógio injetável (testes). */
+  clock: () => Date = () => new Date();
+  readonly stateChangedAt = new Map<string, Date>();
+  pingFails = false;
+  async ping(): Promise<void> {
+    if (this.pingFails) throw new Error("banco fora");
+  }
+  async deleteProcessedBefore(before: Date): Promise<number> {
+    let n = 0;
+    for (const [k, t] of [...this.processed]) if (t < before) { this.processed.delete(k); n++; }
+    return n;
+  }
+  async releaseStuckProcessing(before: Date): Promise<number> {
+    let n = 0;
+    for (const [id, c] of [...this.conversations]) {
+      const at = this.stateChangedAt.get(id);
+      if (c.state === "PROCESSING_AUDIO" && at && at < before) {
+        this.conversations.set(id, {
+          ...c, state: "AWAIT_AUDIO", previousState: null, hintSentInState: false, version: c.version + 1,
+        });
+        this.stateChangedAt.set(id, this.clock());
+        n++;
+      }
+    }
+    return n;
   }
   // ---- Etapa 4: cadastro ----
   readonly registrations = new Map<string, RegistrationRecord & { waIdHash?: string }>();

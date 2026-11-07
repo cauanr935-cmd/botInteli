@@ -33,6 +33,12 @@ export interface Repo extends BudgetRepo {
   insertAudio(rec: AudioRecord): Promise<void>;
   /** Etapa 6: fecha o processamento do áudio (resultado fica salvo mesmo que não seja enviado). */
   finishAudio(id: string, status: "done" | "failed", result: unknown, at: Date): Promise<void>;
+  /** Etapa 7: consulta leve (mantém o projeto Supabase ativo). Lança se o banco estiver fora. */
+  ping(): Promise<void>;
+  /** Etapa 7: apaga idempotência anterior a `before`. Devolve quantas linhas saíram. */
+  deleteProcessedBefore(before: Date): Promise<number>;
+  /** Etapa 7: conversas em PROCESSING_AUDIO desde antes de `before` voltam a AWAIT_AUDIO, sem enviar nada. */
+  releaseStuckProcessing(before: Date): Promise<number>;
 }
 
 export interface AudioRecord {
