@@ -255,3 +255,20 @@ describe("Supabase e migração", () => {
     await db.close();
   });
 });
+
+import { it as itR, expect as expectR } from "vitest";
+import { MemoryRepo as MemRepoR } from "../src/db/memory-repo";
+import { processEvents as processR } from "../src/webhook/handler";
+
+itR("C2.5 status que falha no tratamento libera a chave para reprocessar no reenvio", async () => {
+  const repo = new MemRepoR();
+  const ev = { type: "status", id: "w9", status: "sent", recipientId: "5511" } as never;
+  let fail = true;
+  const deps = { appSecret: "s", verifyToken: "v", repo, logger: { log: () => undefined }, onEvent: async () => { if (fail) throw new Error("x"); } };
+  await processR([ev], deps as never);
+  fail = false;
+  let calls = 0;
+  deps.onEvent = async () => { calls++; };
+  await processR([ev], deps as never);
+  expectR(calls).toBe(1);
+});

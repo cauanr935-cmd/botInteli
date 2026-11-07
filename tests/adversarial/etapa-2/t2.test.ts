@@ -1,0 +1,31 @@
+import { it, expect } from "vitest";
+import { MemoryRepo } from "../../../src/db/memory-repo";
+import { sendGuarded } from "../../../src/whatsapp/client";
+import { processEvents } from "../../../src/webhook/handler";
+
+const logger = { log: () => undefined };
+function ctx(repo: MemoryRepo, f: typeof fetch) {
+  return { repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 2, timezone: "America/Sao_Paulo", fetchImpl: f };
+}
+it("template disfarçado (caixa/espaço/campo template) nunca chega à Graph", async () => {
+  const repo = new MemoryRepo(); await repo.touchUser("55", new Date());
+  let calls = 0; const f = (async () => { calls++; return new Response("{}"); }) as typeof fetch;
+  for (const m of [{ to: "55", type: " TEMPLATE " }, { to: "55", type: "text", template: { name: "x" } }])
+    expect((await sendGuarded(m as never, ctx(repo, f))).status).toBe("blocked_template");
+  expect(calls).toBe(0);
+});
+it("falha da Graph não devolve vaga: 2 falhas esgotam stop_at=2", async () => {
+  const repo = new MemoryRepo(); await repo.touchUser("55", new Date());
+  let calls = 0; const f = (async () => { calls++; return new Response("x", { status: 500 }); }) as typeof fetch;
+  const m = { to: "55", type: "text", text: { body: "a" } };
+  await sendGuarded(m, ctx(repo, f)); await sendGuarded(m, ctx(repo, f));
+  expect((await sendGuarded(m, ctx(repo, f))).status).toBe("blocked_budget");
+  expect(calls).toBe(2);
+});
+it("mensagem duplicada que falha não é liberada (sem resposta dupla)", async () => {
+  const repo = new MemoryRepo(); let n = 0;
+  const ev = { type: "text", wamid: "w9", from: "55", timestamp: 1, text: "oi" } as never;
+  const deps = { appSecret: "s", verifyToken: "v", repo, logger, onEvent: async () => { n++; throw new Error("x"); } };
+  await processEvents([ev], deps as never); await processEvents([ev], deps as never);
+  expect(n).toBe(1);
+});

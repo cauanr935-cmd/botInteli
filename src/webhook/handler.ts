@@ -38,6 +38,7 @@ export function idempotencyKey(ev: WebhookEvent): string {
 export async function processEvents(events: WebhookEvent[], deps: WebhookDeps): Promise<void> {
   const now = deps.now ?? (() => new Date());
   for (const ev of events) {
+    let claimedKey: string | null = null;
     try {
       const received = now();
       const fresh = await deps.repo.claimMessage(idempotencyKey(ev), received);
@@ -45,6 +46,7 @@ export async function processEvents(events: WebhookEvent[], deps: WebhookDeps): 
         deps.logger.log("debug", "duplicate_ignored", { type: ev.type });
         continue;
       }
+      claimedKey = idempotencyKey(ev);
       if (ev.type !== "status") {
         const at = ev.timestamp ? new Date(ev.timestamp * 1000) : received;
         await deps.repo.touchUser(ev.from, at <= received ? at : received);
@@ -55,6 +57,15 @@ export async function processEvents(events: WebhookEvent[], deps: WebhookDeps): 
         ...(ev.type !== "status" ? { from: maskPhone(ev.from) } : {}),
       });
     } catch (e) {
+      // Status é idempotente (ligar a trava de novo é seguro): libera a chave para que o
+      // reenvio da Meta seja reprocessado e o sinal "billable" não se perca.
+      if (ev.type === "status" && claimedKey !== null) {
+        try {
+          await deps.repo.unclaimMessage(claimedKey);
+        } catch {
+          deps.logger.log("error", "unclaim_failed");
+        }
+      }
       deps.logger.log("error", "event_failed", {
         type: ev.type,
         ...(ev.type !== "status" ? { from: maskPhone(ev.from) } : {}),

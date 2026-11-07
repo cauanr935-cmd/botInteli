@@ -27,3 +27,6 @@ Coisas que só uma pessoa da equipe pode fazer. Os agentes acrescentam itens aqu
 ## Publicação
 - [ ] Publicar o Flow de cadastro (`flows/cadastro.json`) no WhatsApp Manager e definir `WHATSAPP_FLOW_ID`.
 - [ ] Fazer o deploy seguindo `docs/DEPLOY.md` e registrar a URL do webhook no app da Meta.
+
+## Etapa 2
+- [ ] Aplicar `supabase/migrations/0002_budget.sql` no projeto Supabase (depois da 0001).

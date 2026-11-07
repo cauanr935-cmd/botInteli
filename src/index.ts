@@ -1,3 +1,5 @@
+import { handleAdmin, type AdminDeps } from "./admin/budget";
+import { handleStatusEvent } from "./budget/status";
 import { loadConfig } from "./config";
 import { SupabaseRepo } from "./db/supabase-repo";
 import type { Repo } from "./db/repo";
@@ -13,6 +15,8 @@ export interface AppDeps {
   logger: Logger;
   onEvent?: EventHandler;
   now?: () => Date;
+  /** Endpoints admin (/admin/*). Sem isso, respondem 500 (config inválida). */
+  admin?: AdminDeps;
 }
 
 /** Roteador puro: recebe dependências já montadas (testável sem env). */
@@ -20,6 +24,10 @@ export async function route(request: Request, ctx: WaitUntilCtx, deps: AppDeps |
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/health") {
     return new Response("ok", { status: 200 });
+  }
+  if (url.pathname.startsWith("/admin/")) {
+    if (!deps?.admin) return new Response("server misconfigured", { status: 500 });
+    return handleAdmin(request, deps.admin);
   }
   if (url.pathname === "/webhook") {
     if (!deps) return new Response("server misconfigured", { status: 500 });
@@ -33,11 +41,22 @@ export async function route(request: Request, ctx: WaitUntilCtx, deps: AppDeps |
 function buildDeps(env: Env, logger: Logger): AppDeps | null {
   try {
     const cfg = loadConfig(env);
+    const repo = new SupabaseRepo(cfg.supabaseUrl, cfg.supabaseServiceKey);
     return {
       appSecret: cfg.appSecret,
       verifyToken: cfg.verifyToken,
-      repo: new SupabaseRepo(cfg.supabaseUrl, cfg.supabaseServiceKey),
+      repo,
       logger,
+      // Status webhooks: pricing -> outbound_log e trava manual (R1).
+      onEvent: async (ev) => {
+        if (ev.type === "status") {
+          await handleStatusEvent(ev, { repo, logger, phoneNumberId: cfg.phoneNumberId });
+        }
+      },
+      admin: {
+        adminToken: cfg.adminToken, repo, logger, phoneNumberId: cfg.phoneNumberId,
+        stopAt: cfg.stopAt, timezone: cfg.metaAccountTimezone,
+      },
     };
   } catch (e) {
     logger.log("error", "config_invalid", { message: (e as Error).message });
@@ -49,7 +68,7 @@ export default {
   async fetch(request: Request, env: Env = {}, ctx?: ExecutionContext): Promise<Response> {
     const logger = createLogger();
     const pathname = new URL(request.url).pathname;
-    const deps = pathname === "/webhook" ? buildDeps(env, logger) : null;
+    const deps = pathname === "/webhook" || pathname.startsWith("/admin/") ? buildDeps(env, logger) : null;
     const safeCtx: WaitUntilCtx = ctx ?? { waitUntil: () => undefined };
     return route(request, safeCtx, deps);
   },
