@@ -1,4 +1,5 @@
 import { FIELD_KEYS } from "../registration/fields";
+import type { Service } from "../services/content";
 import type {
   BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
@@ -63,7 +64,7 @@ export class SupabaseRepo implements Repo {
   // ---- Etapa 3: conversa ----
   async getConversation(waId: string): Promise<StoredConversation> {
     const res = await this.fetchImpl(
-      `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&select=state,previous_state,hint_sent_in_state,opted_out_at,version`,
+      `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&select=state,previous_state,hint_sent_in_state,opted_out_at,last_service_id,version`,
       { headers: this.headers() },
     );
     if (!res.ok) throw new Error(`supabase getConversation falhou: ${res.status}`);
@@ -74,6 +75,7 @@ export class SupabaseRepo implements Repo {
       previousState: (r.previous_state as string | null) ?? null,
       hintSentInState: r.hint_sent_in_state === true,
       optedOutAt: r.opted_out_at ? new Date(r.opted_out_at as string) : null,
+      lastServiceId: (r.last_service_id as string | null) ?? null,
       version: Number(r.version),
     };
   }
@@ -87,6 +89,7 @@ export class SupabaseRepo implements Repo {
         headers: this.headers({ Prefer: "return=representation" }),
         body: JSON.stringify({
           state: n.state, previous_state: n.previousState, hint_sent_in_state: n.hintSentInState,
+          last_service_id: n.lastServiceId ?? null,
           opted_out_at: n.optedOutAt ? n.optedOutAt.toISOString() : null, version: expectedVersion + 1,
         }),
       },
@@ -238,5 +241,29 @@ export class SupabaseRepo implements Repo {
     if (!res.ok) throw new Error(`supabase updateOutboundPricing falhou: ${res.status}`);
     const rows = (await res.json()) as unknown[];
     return Array.isArray(rows) && rows.length > 0;
+  }
+
+  async listActiveServices(): Promise<Service[]> {
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/services?active=eq.true&order=sort_order.asc&select=id,title,description,requires_audio,sort_order&limit=100`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase listActiveServices falhou: ${res.status}`);
+    const rows = (await res.json()) as {
+      id: string; title: string; description: string | null; requires_audio: boolean; sort_order: number;
+    }[];
+    return rows.map((r) => ({
+      id: r.id, title: r.title, description: r.description ?? "",
+      requiresAudio: r.requires_audio === true, sortOrder: r.sort_order,
+    }));
+  }
+
+  async listCannedResponses(): Promise<Record<string, string>> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/canned_responses?select=key,text&limit=500`, {
+      headers: this.headers(),
+    });
+    if (!res.ok) throw new Error(`supabase listCannedResponses falhou: ${res.status}`);
+    const rows = (await res.json()) as { key: string; text: string }[];
+    return Object.fromEntries(rows.map((r) => [r.key, r.text]));
   }
 }

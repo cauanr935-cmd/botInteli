@@ -2,7 +2,12 @@
 // Sem I/O: nada de rede, banco, relógio global ou aleatoriedade (o horário chega por parâmetro).
 import type { IncomingMessage } from "../whatsapp/types";
 import { intentsOf, type Intent } from "./synonyms";
-import { REPLIES, type Reply } from "./texts";
+import { fallbackContent, type Content } from "../services/content";
+import { findService, MENU_BUTTON_ID, menuReply, serviceAnswerReply } from "../services/menu";
+import { REPLIES, type Reply, type ReplyFn } from "./texts";
+
+/** Sem mensagem do bot há mais que isto, um "oi" em MENU/AWAIT_AUDIO reabre o menu (sessão antiga). */
+export const SESSION_IDLE_MS = 6 * 60 * 60 * 1000;
 
 export type State =
   | "NEW"
@@ -21,6 +26,8 @@ export interface UserState {
   /** Já mandamos a dica única neste estado? Zera ao mudar de estado. */
   hintSentInState: boolean;
   optedOutAt: Date | null;
+  /** Último serviço sem áudio respondido; repetir a mesma linha = silêncio (R2). Zera ao reabrir o menu/mudar de estado. */
+  lastServiceId?: string | null;
 }
 
 export interface Counters {
@@ -30,6 +37,11 @@ export interface Counters {
   sentLastDay: number;
   maxPer10Min: number;
   maxPerDay: number;
+  /**
+   * Instante da última mensagem do bot para a pessoa (null = nenhuma nas últimas 24h).
+   * Ausente (undefined) = não informado: nunca considera a sessão antiga.
+   */
+  lastBotMsgAt?: Date | null;
 }
 
 export type Decision = {
@@ -48,7 +60,7 @@ type Matcher =
 interface Transition {
   on: Matcher;
   to: State;
-  reply?: Reply;
+  reply?: ReplyFn;
 }
 
 interface StateDef {
@@ -56,7 +68,7 @@ interface StateDef {
   /** Intenções reconhecidas mas ignoradas em silêncio (não gastam a dica). */
   ignore?: Intent[];
   /** Dica única (reapresenta as opções do estado). Sem ela, o estado nunca manda dica. */
-  hint?: Reply;
+  hint?: ReplyFn;
 }
 
 /** Tabela de estados. Etapas 4 a 6 acrescentam transições aqui. */
@@ -72,14 +84,17 @@ export const STATES: Record<string, StateDef> = {
     hint: REPLIES.hintRegistration,
   },
   MENU: {
-    // Escolha de serviço (list_reply) é da Etapa 5.
-    transitions: [],
+    // A escolha na lista (list_reply) é tratada em decide(), pois os serviços vêm do banco.
+    transitions: [
+      { on: { kind: "text", intent: "menu" }, to: "MENU", reply: REPLIES.menu },
+      { on: { kind: "button_reply", id: MENU_BUTTON_ID }, to: "MENU", reply: REPLIES.menu },
+    ],
     hint: REPLIES.hintMenu,
   },
   AWAIT_AUDIO: {
     transitions: [
       { on: { kind: "text", intent: "menu" }, to: "MENU", reply: REPLIES.menu },
-      { on: { kind: "button_reply", id: "menu" }, to: "MENU", reply: REPLIES.menu },
+      { on: { kind: "button_reply", id: MENU_BUTTON_ID }, to: "MENU", reply: REPLIES.menu },
       { on: { kind: "audio" }, to: "PROCESSING_AUDIO" }, // resposta vem do pipeline (Etapa 6)
     ],
     hint: REPLIES.hintAudio,
@@ -89,7 +104,7 @@ export const STATES: Record<string, StateDef> = {
 };
 
 /** Mensagem ao retomar um estado (reapresenta as opções dele). */
-function promptFor(state: State): Reply | undefined {
+function promptFor(state: State): ReplyFn | undefined {
   switch (state) {
     case "NEW": return REPLIES.resumeNew;
     case "AWAIT_REGISTRATION": return REPLIES.welcome;
@@ -107,6 +122,13 @@ function matches(m: Matcher, msg: IncomingMessage, intents: Set<Intent>): boolea
     case "button_reply": return msg.type === "button_reply" && msg.id === m.id;
     case "list_reply": return msg.type === "list_reply" && msg.id === m.id;
   }
+}
+
+/** Remove a marca do último serviço respondido (menu reaberto = nova rodada). */
+function clearService(u: UserState): UserState {
+  const rest: UserState = { ...u };
+  delete rest.lastServiceId;
+  return rest;
 }
 
 export function moveTo(cur: UserState, to: State, now: Date, previous: State | null = null): UserState {
@@ -133,7 +155,9 @@ export function finish(cur: UserState, next: UserState, replies: Reply[], c: Cou
 }
 
 /** Decide a resposta (no máximo 1) e o próximo estado. Sem I/O. */
-export function decide(user: UserState, input: IncomingMessage, counters: Counters, now: Date): Decision {
+export function decide(
+  user: UserState, input: IncomingMessage, counters: Counters, now: Date, content: Content = fallbackContent,
+): Decision {
   const silent = (): Decision => ({ replies: [], nextState: user, outcome: "silent" });
   const intents = input.type === "text" ? intentsOf(input.body) : new Set<Intent>();
 
@@ -142,27 +166,49 @@ export function decide(user: UserState, input: IncomingMessage, counters: Counte
     if (input.type === "text" && intents.has("resume")) {
       const back: State = user.previousState ?? "NEW";
       const next = { ...moveTo(user, back, now), previousState: null };
-      return finish(user, next, [promptFor(back)].filter((r): r is Reply => !!r), counters, "transition");
+      return finish(user, next, [promptFor(back)].flatMap((r) => (r ? [r(content)] : [])), counters, "transition");
     }
     return silent();
   }
 
   // "sair" vale em qualquer estado.
   if (input.type === "text" && intents.has("quit")) {
-    return finish(user, moveTo(user, "OPTED_OUT", now, user.state), [REPLIES.optOutConfirm], counters, "transition");
+    return finish(user, moveTo(user, "OPTED_OUT", now, user.state), [REPLIES.optOutConfirm(content)], counters, "transition");
   }
 
   const def = STATES[user.state];
   if (!def) return silent();
 
+  // Sessão antiga (sem mensagem do bot há horas): "oi" reabre o menu em 1 mensagem.
+  if (
+    (user.state === "MENU" || user.state === "AWAIT_AUDIO") &&
+    input.type === "text" && intents.has("greeting") &&
+    counters.lastBotMsgAt !== undefined &&
+    (counters.lastBotMsgAt === null || now.getTime() - counters.lastBotMsgAt.getTime() > SESSION_IDLE_MS)
+  ) {
+    const intro = content.text("welcomeBack", "Que bom ver você de novo! Escolha um serviço na lista.");
+    return finish(user, clearService(moveTo(user, "MENU", now)), [menuReply(content, intro)], counters, "reply");
+  }
+
+  // Escolha na lista do menu: serviço com áudio -> instrução (AWAIT_AUDIO); sem áudio -> resposta pronta.
+  if (user.state === "MENU" && input.type === "list_reply") {
+    const svc = findService(content, input.id);
+    if (!svc) return silent(); // linha desconhecida/inativa: silêncio
+    if (svc.requiresAudio) {
+      return finish(user, moveTo(user, "AWAIT_AUDIO", now), [REPLIES.audioInstruction(content)], counters, "reply");
+    }
+    if (user.lastServiceId === svc.id) return silent(); // mesma escolha de novo: sem resposta (R2)
+    return finish(user, { ...user, lastServiceId: svc.id }, [serviceAnswerReply(content, svc)], counters, "reply");
+  }
+
   const t = def.transitions.find((tr) => matches(tr.on, input, intents));
   if (t) {
-    return finish(user, moveTo(user, t.to, now), t.reply ? [t.reply] : [], counters, t.reply ? "reply" : "transition");
+    return finish(user, clearService(moveTo(user, t.to, now)), t.reply ? [t.reply(content)] : [], counters, t.reply ? "reply" : "transition");
   }
 
   // Só texto não reconhecido merece dica; qualquer outro tipo = silêncio total.
   if (input.type !== "text") return silent();
   if (def.ignore?.some((i) => intents.has(i))) return silent();
   if (!def.hint || user.hintSentInState) return silent();
-  return finish(user, { ...user, hintSentInState: true }, [def.hint], counters, "hint");
+  return finish(user, { ...user, hintSentInState: true }, [def.hint(content)], counters, "hint");
 }

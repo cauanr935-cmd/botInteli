@@ -1,3 +1,6 @@
+import { MENU_FALLBACKS, menuReply } from "../services/menu";
+import type { Content } from "../services/content";
+
 // Textos do bot (português). Cada texto é UMA mensagem útil: nada de "aguarde",
 // "processando" ou "recebi seu áudio" como mensagem separada (R2).
 
@@ -12,7 +15,7 @@ export const TEXTS = {
     "Olá! Que bom ter você aqui. Vamos fazer o seu cadastro rápido para liberar os serviços. Para parar de receber mensagens, envie *sair*.",
   registrationDone:
     "Cadastro concluído! Escolha um serviço no menu. Para parar de receber mensagens, envie *sair*.",
-  menu: "Menu de serviços: escolha uma opção. Para parar de receber mensagens, envie *sair*.",
+  menu: MENU_FALLBACKS.menu,
   audioInstruction: "Envie o seu áudio para análise. Para voltar ao início, envie *menu*.",
   optOutConfirm: "Tudo bem, você não receberá mais mensagens. Se mudar de ideia, envie *voltar*.",
   hintNew: "Para começar, envie *oi*.",
@@ -22,17 +25,22 @@ export const TEXTS = {
   resumeNew: "Que bom ter você de volta! Para começar, envie *oi*.",
 } as const;
 
+/** Resposta montada a partir do conteúdo (banco + fallback). */
+export type ReplyFn = (c: Content) => Reply;
+
+const fromKey = (key: keyof typeof TEXTS): ReplyFn => (c) => text(c.text(key, TEXTS[key]));
+
 export const REPLIES = {
-  welcome: text(TEXTS.welcome),
-  registrationDone: text(TEXTS.registrationDone),
-  menu: text(TEXTS.menu),
-  audioInstruction: text(TEXTS.audioInstruction),
-  optOutConfirm: text(TEXTS.optOutConfirm),
-  hintNew: text(TEXTS.hintNew),
-  hintRegistration: text(TEXTS.hintRegistration),
-  hintMenu: text(TEXTS.hintMenu),
-  hintAudio: text(TEXTS.hintAudio),
-  resumeNew: text(TEXTS.resumeNew),
+  welcome: fromKey("welcome"),
+  registrationDone: fromKey("registrationDone"),
+  menu: ((c) => menuReply(c)) as ReplyFn,
+  audioInstruction: fromKey("audioInstruction"),
+  optOutConfirm: fromKey("optOutConfirm"),
+  hintNew: fromKey("hintNew"),
+  hintRegistration: fromKey("hintRegistration"),
+  hintMenu: fromKey("hintMenu"),
+  hintAudio: fromKey("hintAudio"),
+  resumeNew: fromKey("resumeNew"),
 } as const;
 
 /** Todos os textos que o bot pode enviar (varridos pelo teste C3.9). */

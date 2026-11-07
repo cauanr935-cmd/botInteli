@@ -14,14 +14,6 @@ export const REG_TEXTS = {
   hintFlowInvalid: "Não consegui validar o formulário. Abra o cadastro acima e confira todos os campos, incluindo o aceite.",
   registered: "Cadastro concluído! Escolha um serviço na lista.",
   welcomeBack: "Que bom ver você de novo! Escolha um serviço na lista.",
-  menuButton: "Ver serviços",
-  menuSection: "Serviços",
 } as const;
 
 export const CONSENT_BUTTON_ID = "consent_yes";
-export const MENU_ROW_PREFIX = "svc_";
-
-/** Serviços provisórios do menu até a Etapa 5 (que os lê do banco). */
-export const PROVISIONAL_SERVICES: readonly { id: string; title: string; description: string }[] = [
-  { id: "svc_audio", title: "Análise de áudio", description: "Envie um áudio e receba a análise" },
-];

@@ -1,5 +1,6 @@
 import { MAX_STOP_AT } from "../config";
 import { FIELD_KEYS } from "../registration/fields";
+import type { Service } from "../services/content";
 import type {
   BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
@@ -74,6 +75,16 @@ export class MemoryRepo implements Repo {
     // Mesma regra do CHECK do banco (R6): sem consentimento, nenhum dado de cadastro.
     if (!next.consentAt && (Object.keys(values).length > 0 || next.registeredAt)) throw new Error("sem consentimento");
     this.registrations.set(waId, next);
+  }
+  // ---- Etapa 5: conteúdo ----
+  /** Serviços ATIVOS (testes preenchem). */
+  services: Service[] = [];
+  readonly canned = new Map<string, string>();
+  async listActiveServices(): Promise<Service[]> {
+    return this.services.map((s) => ({ ...s }));
+  }
+  async listCannedResponses(): Promise<Record<string, string>> {
+    return Object.fromEntries(this.canned);
   }
   async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
     return this.outbound.filter((r) => r.waIdHash === waIdHash && r.reservedAt >= since).map((r) => r.reservedAt);

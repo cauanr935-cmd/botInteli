@@ -221,12 +221,21 @@ describe("C3.6 tipos não esperados", () => {
 describe("C3.7 decide é pura", () => {
   const dir = join(__dirname, "..", "src", "conversation");
   const pure = ["machine.ts", "normalize.ts", "synonyms.ts", "texts.ts"];
+  const pureExt = [
+    ["..", "services", "content.ts"], ["..", "services", "menu.ts"], ["..", "whatsapp", "builders.ts"],
+  ];
   it("C3.7 arquivos puros só importam entre si e tipos", () => {
-    for (const f of pure) {
-      const src = readFileSync(join(dir, f), "utf8");
+    const files: [string, string][] = [
+      ...pure.map((f): [string, string] => [f, join(dir, f)]),
+      ...pureExt.map((parts): [string, string] => [parts.join("/"), join(dir, ...parts)]),
+    ];
+    for (const [f, path] of files) {
+      const src = readFileSync(path, "utf8");
       for (const m of src.matchAll(/from\s+["']([^"']+)["']/g)) {
         const spec = m[1]!;
-        expect(spec.startsWith("./") || spec === "../whatsapp/types", `${f} importa ${spec}`).toBe(true);
+        const allowed = ["../whatsapp/types", "../whatsapp/builders", "../services/content", "../services/menu"];
+        const extra = ["../lib/logger", "../conversation/texts", "../whatsapp/builders"]; // só tipos/constantes puras
+        expect(spec.startsWith("./") || allowed.includes(spec) || extra.includes(spec), `${f} importa ${spec}`).toBe(true);
       }
       expect(src, f).not.toMatch(/\bfetch\s*\(|Date\.now|new Date\(\s*\)|Math\.random|\bprocess\b|\bconsole\b|\bcrypto\b/);
     }

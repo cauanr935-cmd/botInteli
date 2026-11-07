@@ -5,6 +5,7 @@ import { handleIncomingMessage } from "./conversation/engine";
 import { sendGuarded } from "./whatsapp/client";
 import { SupabaseRepo } from "./db/supabase-repo";
 import type { Repo } from "./db/repo";
+import { ContentProvider } from "./services/provider";
 import { createLogger, type Logger } from "./lib/logger";
 import { handleVerification, handleWebhookPost, type EventHandler, type WaitUntilCtx } from "./webhook/handler";
 
@@ -40,10 +41,18 @@ export async function route(request: Request, ctx: WaitUntilCtx, deps: AppDeps |
   return new Response("not found", { status: 404 });
 }
 
+// Cache de conteúdo (TTL) vive no isolate: sobrevive entre requisições, evitando uma consulta por mensagem.
+const contentProviders = new Map<string, ContentProvider>();
+
 function buildDeps(env: Env, logger: Logger): AppDeps | null {
   try {
     const cfg = loadConfig(env);
     const repo = new SupabaseRepo(cfg.supabaseUrl, cfg.supabaseServiceKey);
+    let content = contentProviders.get(cfg.supabaseUrl);
+    if (!content) {
+      content = new ContentProvider(repo, logger);
+      contentProviders.set(cfg.supabaseUrl, content);
+    }
     return {
       appSecret: cfg.appSecret,
       verifyToken: cfg.verifyToken,
@@ -57,7 +66,7 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
         }
         // Mensagens: motor de conversa -> decide -> sendGuarded (R1/R2).
         await handleIncomingMessage(ev, {
-          repo, logger,
+          repo, logger, content,
           maxPerDay: cfg.maxBotMsgsPerUserPerDay,
           maxPer10Min: cfg.maxBotMsgsPerUserPer10Min,
           registration: {

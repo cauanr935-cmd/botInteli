@@ -8,6 +8,7 @@ import {
   decideRegistration, isRegistrationState, registrationPrompt, type RegDecision, type RegistrationContext,
   type RegistrationEffect,
 } from "../registration/decide";
+import { fallbackContent, type Content } from "../services/content";
 import { decide, type Counters, type State, type UserState } from "./machine";
 
 export interface EngineDeps {
@@ -19,6 +20,8 @@ export interface EngineDeps {
   maxPer10Min: number;
   now?: () => Date;
   /** Cadastro (Etapa 4). Sem isto, vale o comportamento provisório da Etapa 3. */
+  /** Conteúdo do banco com cache (Etapa 5). Sem isto, valem os textos e serviços do código. */
+  content?: { load(): Promise<Content> };
   registration?: { flowId?: string; privacyUrl: string; termsVersion: string };
 }
 
@@ -30,7 +33,10 @@ export async function handleIncomingMessage(msg: IncomingMessage, deps: EngineDe
   const now = (deps.now ?? (() => new Date()))();
   const waIdHash = await hashWaId(msg.from);
   const sent = await deps.repo.listOutboundSince(waIdHash, new Date(now.getTime() - DAY_MS));
+  const content = deps.content ? await deps.content.load() : fallbackContent;
+  const lastBot = sent.reduce<Date | null>((m, t) => (m === null || t > m ? t : m), null);
   const counters: Counters = {
+    lastBotMsgAt: lastBot,
     sentLastDay: sent.length,
     sentLast10Min: sent.filter((t) => now.getTime() - t.getTime() < TEN_MIN_MS).length,
     maxPerDay: deps.maxPerDay,
@@ -44,8 +50,9 @@ export async function handleIncomingMessage(msg: IncomingMessage, deps: EngineDe
       previousState: stored.previousState as State | null,
       hintSentInState: stored.hintSentInState,
       optedOutAt: stored.optedOutAt,
+      ...(stored.lastServiceId ? { lastServiceId: stored.lastServiceId } : {}),
     };
-    let d: RegDecision = decide(user, msg, counters, now);
+    let d: RegDecision = decide(user, msg, counters, now, content);
     let effect: RegistrationEffect | undefined;
     if (deps.registration) {
       const reg = deps.registration;
@@ -54,6 +61,7 @@ export async function handleIncomingMessage(msg: IncomingMessage, deps: EngineDe
       const ctx: RegistrationContext = {
         ...(reg.flowId ? { flowId: reg.flowId } : {}),
         privacyUrl: reg.privacyUrl,
+        content,
         registered: rec?.registeredAt != null,
         hasConsent: rec?.consentAt != null,
       };
@@ -71,6 +79,7 @@ export async function handleIncomingMessage(msg: IncomingMessage, deps: EngineDe
       d.nextState.state !== user.state ||
       d.nextState.hintSentInState !== user.hintSentInState ||
       d.nextState.previousState !== user.previousState ||
+      (d.nextState.lastServiceId ?? null) !== (user.lastServiceId ?? null) ||
       d.nextState.optedOutAt?.getTime() !== user.optedOutAt?.getTime();
     if (effect) await applyEffect(effect, msg.from, deps, now); // idempotente: repetir não causa dano
     if (changed) {

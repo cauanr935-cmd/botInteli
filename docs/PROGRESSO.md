@@ -9,7 +9,7 @@ Atualizado pelo orquestrador ao fim de cada etapa. Status possíveis: `PENDENTE`
 | 2 | Disjuntor de orçamento | APROVADA | 2 | 2026-11-07 |
 | 3 | Motor de conversa com anti-spam | APROVADA | 1 | 2026-11-07 |
 | 4 | Cadastro com consentimento LGPD | APROVADA | 1 | 2026-11-07 |
-| 5 | Menu de serviços e respostas prontas | PENDENTE | 0 | |
+| 5 | Menu de serviços e respostas prontas | APROVADA | 2 | 2026-11-07 |
 | 6 | Pipeline de áudio | PENDENTE | 0 | |
 | 7 | Operação e preparação para deploy | PENDENTE | 0 | |
 | 8 | Simulação ponta a ponta e auditoria final | PENDENTE | 0 | |

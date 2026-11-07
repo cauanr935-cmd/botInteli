@@ -10,6 +10,7 @@ import { FIELDS } from "./fields";
 import {
   confirmationAndMenu, consentWelcomeReply, fieldPromptReply, flowWelcomeReply, welcomeBackMenu,
 } from "./replies";
+import { fallbackContent, type Content } from "../services/content";
 import { CONSENT_BUTTON_ID, REG_TEXTS } from "./texts";
 
 export interface RegistrationContext {
@@ -19,6 +20,8 @@ export interface RegistrationContext {
   registered: boolean;
   /** Já existe consent_at gravado (não regrava). */
   hasConsent: boolean;
+  /** Textos e serviços do banco (com fallback). Ausente = só os textos do código. */
+  content?: Content;
 }
 
 /** Efeito a executar (com I/O) pelo motor quando a transição for confirmada. */
@@ -65,8 +68,9 @@ export function parseFlowResponse(responseJson: string): FlowParse {
 
 /** Mensagem ao retomar (depois do opt-out) um estado de cadastro. */
 export function registrationPrompt(state: State, ctx: RegistrationContext): Reply | undefined {
-  if (state === "AWAIT_REGISTRATION" && ctx.flowId) return flowWelcomeReply(ctx.flowId);
-  if (state === "AWAIT_REGISTRATION" || state === "REG_CONSENT") return consentWelcomeReply(ctx.privacyUrl);
+  const c = ctx.content ?? fallbackContent;
+  if (state === "AWAIT_REGISTRATION" && ctx.flowId) return flowWelcomeReply(ctx.flowId, c);
+  if (state === "AWAIT_REGISTRATION" || state === "REG_CONSENT") return consentWelcomeReply(ctx.privacyUrl, c);
   const i = fieldIndex(state);
   return i >= 0 ? fieldPromptReply(i) : undefined;
 }
@@ -81,6 +85,8 @@ function hintOnce(user: UserState, text: string, counters: Counters): RegDecisio
 export function decideRegistration(
   user: UserState, input: IncomingMessage, counters: Counters, now: Date, ctx: RegistrationContext,
 ): RegDecision | null {
+  const c = ctx.content ?? fallbackContent;
+  const hintText = (key: keyof typeof REG_TEXTS): string => c.text(key, REG_TEXTS[key]);
   const silent = (): RegDecision => ({ replies: [], nextState: user, outcome: "silent" });
   const intents: Set<Intent> = input.type === "text" ? intentsOf(input.body) : new Set<Intent>();
   if (input.type === "text" && intents.has("quit")) return null; // opt-out é da máquina principal
@@ -91,11 +97,11 @@ export function decideRegistration(
   // ---- NEW: só a saudação inicia o cadastro (ou leva direto ao menu quem já é cadastrado) ----
   if (user.state === "NEW") {
     if (!(input.type === "text" && intents.has("greeting"))) return null;
-    if (ctx.registered) return finish(user, moveTo(user, "MENU", now), [welcomeBackMenu()], counters, "reply");
+    if (ctx.registered) return finish(user, moveTo(user, "MENU", now), [welcomeBackMenu(c)], counters, "reply");
     if (ctx.flowId) {
-      return finish(user, moveTo(user, "AWAIT_REGISTRATION", now), [flowWelcomeReply(ctx.flowId)], counters, "reply");
+      return finish(user, moveTo(user, "AWAIT_REGISTRATION", now), [flowWelcomeReply(ctx.flowId, c)], counters, "reply");
     }
-    return finish(user, moveTo(user, "REG_CONSENT", now), [consentWelcomeReply(ctx.privacyUrl)], counters, "reply");
+    return finish(user, moveTo(user, "REG_CONSENT", now), [consentWelcomeReply(ctx.privacyUrl, c)], counters, "reply");
   }
 
   if (!isRegistrationState(user.state)) return null;
@@ -108,15 +114,15 @@ export function decideRegistration(
   if (user.state === "AWAIT_REGISTRATION") {
     if (input.type === "nfm_reply") {
       const parsed = parseFlowResponse(input.responseJson);
-      if (!parsed.ok) return hintOnce(user, REG_TEXTS.hintFlowInvalid, counters);
+      if (!parsed.ok) return hintOnce(user, hintText("hintFlowInvalid"), counters);
       return withEffect(
-        finish(user, moveTo(user, "MENU", now), [confirmationAndMenu()], counters, "reply"),
+        finish(user, moveTo(user, "MENU", now), [confirmationAndMenu(c)], counters, "reply"),
         { kind: "complete", values: parsed.values, withConsent: !ctx.hasConsent },
       );
     }
     if (input.type !== "text") return silent();
     if (intents.has("greeting")) return silent(); // boas-vindas já enviadas
-    return hintOnce(user, REG_TEXTS.hintFlow, counters);
+    return hintOnce(user, hintText("hintFlow"), counters);
   }
 
   // ---- fallback: consentimento ----
@@ -135,7 +141,7 @@ export function decideRegistration(
     }
     if (input.type !== "text") return silent();
     if (intents.has("greeting") || intents.has("no")) return silent();
-    return hintOnce(user, REG_TEXTS.hintConsent, counters);
+    return hintOnce(user, hintText("hintConsent"), counters);
   }
 
   // ---- fallback: um campo por vez ----
@@ -153,7 +159,7 @@ export function decideRegistration(
     );
   }
   return withEffect(
-    finish(user, moveTo(user, "MENU", now), [confirmationAndMenu()], counters, "reply"),
+    finish(user, moveTo(user, "MENU", now), [confirmationAndMenu(c)], counters, "reply"),
     { kind: "complete", values: { [field.key]: value }, withConsent: false },
   );
 }

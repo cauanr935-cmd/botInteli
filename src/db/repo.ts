@@ -1,3 +1,5 @@
+import type { Service } from "../services/content";
+
 /** Acesso a dados. Implementações: memória (testes) e Supabase (produção). */
 export interface Repo extends BudgetRepo {
   /**
@@ -23,6 +25,10 @@ export interface Repo extends BudgetRepo {
   saveRegistration(waId: string, patch: RegistrationPatch): Promise<void>;
   /** Instantes (reserved_at) das mensagens do bot para a pessoa desde `since`. */
   listOutboundSince(waIdHash: string, since: Date): Promise<Date[]>;
+  /** Etapa 5: serviços ativos (o corte em 10 e a ordenação final são do ContentProvider). */
+  listActiveServices(): Promise<Service[]>;
+  /** Etapa 5: respostas prontas (chave -> texto). */
+  listCannedResponses(): Promise<Record<string, string>>;
 }
 
 export interface RegistrationRecord {
@@ -46,6 +52,7 @@ export interface ConversationFields {
   previousState: string | null;
   hintSentInState: boolean;
   optedOutAt: Date | null;
+  lastServiceId?: string | null;
 }
 export interface StoredConversation extends ConversationFields {
   version: number;
