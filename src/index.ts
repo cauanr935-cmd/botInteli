@@ -60,6 +60,10 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
           repo, logger,
           maxPerDay: cfg.maxBotMsgsPerUserPerDay,
           maxPer10Min: cfg.maxBotMsgsPerUserPer10Min,
+          registration: {
+            ...(cfg.whatsappFlowId ? { flowId: cfg.whatsappFlowId } : {}),
+            privacyUrl: cfg.privacyPolicyUrl, termsVersion: cfg.termsVersion,
+          },
           send: (message) =>
             sendGuarded(message, {
               repo, logger, phoneNumberId: cfg.phoneNumberId, whatsappToken: cfg.whatsappToken,

@@ -1,6 +1,7 @@
 import { MAX_STOP_AT } from "../config";
+import { FIELD_KEYS } from "../registration/fields";
 import type {
-  BudgetRow, ConversationFields, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 export interface MemoryOutboundRow extends OutboundLogEntry {
@@ -49,6 +50,30 @@ export class MemoryRepo implements Repo {
     if (cur !== expectedVersion) return false;
     this.conversations.set(waId, { ...next, version: cur + 1 });
     return true;
+  }
+  // ---- Etapa 4: cadastro ----
+  readonly registrations = new Map<string, RegistrationRecord & { waIdHash?: string }>();
+  async getRegistration(waId: string): Promise<RegistrationRecord> {
+    const r = this.registrations.get(waId);
+    return r
+      ? { ...r, values: { ...r.values } }
+      : { consentAt: null, termsVersion: null, registeredAt: null, values: {} };
+  }
+  async saveRegistration(waId: string, patch: RegistrationPatch): Promise<void> {
+    if (!this.users.has(waId)) throw new Error("usuario inexistente");
+    const cur = this.registrations.get(waId) ?? { consentAt: null, termsVersion: null, registeredAt: null, values: {} };
+    const values = { ...cur.values };
+    for (const [k, v] of Object.entries(patch.values ?? {})) if (FIELD_KEYS.includes(k)) values[k] = v;
+    const next = {
+      ...cur, values,
+      ...(patch.waIdHash ? { waIdHash: patch.waIdHash } : {}),
+      consentAt: patch.consentAt ?? cur.consentAt,
+      termsVersion: patch.termsVersion ?? cur.termsVersion,
+      registeredAt: patch.registeredAt ?? cur.registeredAt,
+    };
+    // Mesma regra do CHECK do banco (R6): sem consentimento, nenhum dado de cadastro.
+    if (!next.consentAt && (Object.keys(values).length > 0 || next.registeredAt)) throw new Error("sem consentimento");
+    this.registrations.set(waId, next);
   }
   async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
     return this.outbound.filter((r) => r.waIdHash === waIdHash && r.reservedAt >= since).map((r) => r.reservedAt);

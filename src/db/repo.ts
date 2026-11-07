@@ -17,8 +17,28 @@ export interface Repo extends BudgetRepo {
    * Devolve false se outra mensagem mudou o estado antes (evita resposta dupla em rajadas).
    */
   saveConversation(waId: string, expectedVersion: number, next: ConversationFields): Promise<boolean>;
+  /** Etapa 4: situação do cadastro (nada além do estado técnico antes do aceite). */
+  getRegistration(waId: string): Promise<RegistrationRecord>;
+  /** Grava parte do cadastro. Lança se a pessoa não existir. */
+  saveRegistration(waId: string, patch: RegistrationPatch): Promise<void>;
   /** Instantes (reserved_at) das mensagens do bot para a pessoa desde `since`. */
   listOutboundSince(waIdHash: string, since: Date): Promise<Date[]>;
+}
+
+export interface RegistrationRecord {
+  consentAt: Date | null;
+  termsVersion: string | null;
+  registeredAt: Date | null;
+  /** Campos já gravados (chave = coluna). */
+  values: Record<string, string>;
+}
+export interface RegistrationPatch {
+  waIdHash?: string;
+  consentAt?: Date;
+  termsVersion?: string;
+  registeredAt?: Date;
+  /** Chaves de FIELDS (outras são ignoradas). */
+  values?: Record<string, string>;
 }
 
 export interface ConversationFields {

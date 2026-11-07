@@ -109,7 +109,7 @@ function matches(m: Matcher, msg: IncomingMessage, intents: Set<Intent>): boolea
   }
 }
 
-function moveTo(cur: UserState, to: State, now: Date, previous: State | null = null): UserState {
+export function moveTo(cur: UserState, to: State, now: Date, previous: State | null = null): UserState {
   if (to === cur.state) return cur;
   return {
     state: to,
@@ -119,12 +119,12 @@ function moveTo(cur: UserState, to: State, now: Date, previous: State | null = n
   };
 }
 
-function limited(c: Counters): boolean {
+export function limited(c: Counters): boolean {
   return c.sentLast10Min >= c.maxPer10Min || c.sentLastDay >= c.maxPerDay;
 }
 
 /** Aplica o limite de mensagens: sem vaga, silêncio. Opt-out é sempre honrado (só a confirmação é muda). */
-function finish(cur: UserState, next: UserState, replies: Reply[], c: Counters, outcome: Decision["outcome"]): Decision {
+export function finish(cur: UserState, next: UserState, replies: Reply[], c: Counters, outcome: Decision["outcome"]): Decision {
   if (replies.length > 0 && limited(c)) {
     const honor = next.state === "OPTED_OUT" && cur.state !== "OPTED_OUT";
     return { replies: [], nextState: honor ? next : cur, outcome: "limited" };

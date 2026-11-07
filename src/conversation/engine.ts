@@ -4,6 +4,10 @@ import { hashWaId } from "../lib/hash";
 import { maskPhone, type Logger } from "../lib/logger";
 import type { OutboundMessage, SendResult } from "../whatsapp/client";
 import type { IncomingMessage } from "../whatsapp/types";
+import {
+  decideRegistration, isRegistrationState, registrationPrompt, type RegDecision, type RegistrationContext,
+  type RegistrationEffect,
+} from "../registration/decide";
 import { decide, type Counters, type State, type UserState } from "./machine";
 
 export interface EngineDeps {
@@ -14,6 +18,8 @@ export interface EngineDeps {
   maxPerDay: number;
   maxPer10Min: number;
   now?: () => Date;
+  /** Cadastro (Etapa 4). Sem isto, vale o comportamento provisório da Etapa 3. */
+  registration?: { flowId?: string; privacyUrl: string; termsVersion: string };
 }
 
 const MAX_CAS_ATTEMPTS = 4;
@@ -39,12 +45,34 @@ export async function handleIncomingMessage(msg: IncomingMessage, deps: EngineDe
       hintSentInState: stored.hintSentInState,
       optedOutAt: stored.optedOutAt,
     };
-    const d = decide(user, msg, counters, now);
+    let d: RegDecision = decide(user, msg, counters, now);
+    let effect: RegistrationEffect | undefined;
+    if (deps.registration) {
+      const reg = deps.registration;
+      const needsRecord = user.state === "NEW" || isRegistrationState(user.state);
+      const rec = needsRecord ? await deps.repo.getRegistration(msg.from) : null;
+      const ctx: RegistrationContext = {
+        ...(reg.flowId ? { flowId: reg.flowId } : {}),
+        privacyUrl: reg.privacyUrl,
+        registered: rec?.registeredAt != null,
+        hasConsent: rec?.consentAt != null,
+      };
+      const rd = decideRegistration(user, msg, counters, now, ctx);
+      if (rd) {
+        d = rd;
+        effect = rd.effect;
+      } else if (user.state === "OPTED_OUT" && d.outcome === "transition" && isRegistrationState(d.nextState.state)) {
+        // "voltar" para um estado de cadastro: reapresenta a pergunta certa (e não a dica genérica).
+        const prompt = registrationPrompt(d.nextState.state, { ...ctx, registered: false, hasConsent: false });
+        if (prompt) d = { ...d, replies: [prompt] };
+      }
+    }
     const changed =
       d.nextState.state !== user.state ||
       d.nextState.hintSentInState !== user.hintSentInState ||
       d.nextState.previousState !== user.previousState ||
       d.nextState.optedOutAt?.getTime() !== user.optedOutAt?.getTime();
+    if (effect) await applyEffect(effect, msg.from, deps, now); // idempotente: repetir não causa dano
     if (changed) {
       const won = await deps.repo.saveConversation(msg.from, stored.version, d.nextState);
       if (!won) continue; // outra mensagem mudou o estado: reavalia com o estado novo
@@ -62,4 +90,25 @@ export async function handleIncomingMessage(msg: IncomingMessage, deps: EngineDe
   }
   // Disputa persistente: melhor ficar em silêncio do que responder em duplicidade.
   deps.logger.log("warn", "conversation_contention", { from: maskPhone(msg.from) });
+}
+
+/** Grava o cadastro (com consentimento primeiro). Lança em erro: a mensagem não é respondida (fail silent). */
+async function applyEffect(effect: RegistrationEffect, waId: string, deps: EngineDeps, now: Date): Promise<void> {
+  const reg = deps.registration;
+  if (!reg) return;
+  const waIdHash = await hashWaId(waId);
+  switch (effect.kind) {
+    case "consent":
+      await deps.repo.saveRegistration(waId, { waIdHash, consentAt: now, termsVersion: reg.termsVersion });
+      return;
+    case "field":
+      await deps.repo.saveRegistration(waId, { values: { [effect.key]: effect.value } });
+      return;
+    case "complete":
+      await deps.repo.saveRegistration(waId, {
+        waIdHash, values: effect.values, registeredAt: now,
+        ...(effect.withConsent ? { consentAt: now, termsVersion: reg.termsVersion } : {}),
+      });
+      return;
+  }
 }

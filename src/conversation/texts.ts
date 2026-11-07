@@ -1,10 +1,9 @@
 // Textos do bot (português). Cada texto é UMA mensagem útil: nada de "aguarde",
 // "processando" ou "recebi seu áudio" como mensagem separada (R2).
 
-export interface Reply {
-  type: "text";
-  text: { body: string };
-}
+export type Reply =
+  | { type: "text"; text: { body: string } }
+  | { type: "interactive"; interactive: unknown };
 
 const text = (body: string): Reply => ({ type: "text", text: { body } });
 

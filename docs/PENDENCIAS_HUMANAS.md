@@ -30,3 +30,11 @@ Coisas que só uma pessoa da equipe pode fazer. Os agentes acrescentam itens aqu
 
 ## Etapa 2
 - [ ] Aplicar `supabase/migrations/0002_budget.sql` no projeto Supabase (depois da 0001).
+
+## Publicar o Flow de cadastro (Etapa 4)
+- [ ] No WhatsApp Manager > Flows > Criar Flow (categoria "Cadastro"/Sign up), colar o conteúdo de `flows/cadastro.json` no editor JSON.
+- [ ] Trocar a `url` do componente OptIn (`https://example.com/politica-de-privacidade`) pelo valor real de `PRIVACY_POLICY_URL`.
+- [ ] Se o editor reclamar da versão do Flow JSON (`6.2`), usar a versão mais recente aceita e conferir se os componentes TextInput/OptIn/Footer continuam válidos.
+- [ ] Testar o Flow no modo de pré-visualização e depois publicar (rascunho não pode ser enviado a usuários).
+- [ ] Copiar o ID do Flow para `WHATSAPP_FLOW_ID`. Sem ele, o bot usa o cadastro por perguntas (fallback).
+- [ ] Se trocar os campos do cadastro: editar `src/registration/fields.ts`, `flows/cadastro.json` e uma migração nova com as colunas.

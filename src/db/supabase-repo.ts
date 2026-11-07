@@ -1,5 +1,6 @@
+import { FIELD_KEYS } from "../registration/fields";
 import type {
-  BudgetRow, ConversationFields, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 /** Repo sobre a API REST (PostgREST) do Supabase. */
@@ -93,6 +94,41 @@ export class SupabaseRepo implements Repo {
     if (!res.ok) throw new Error(`supabase saveConversation falhou: ${res.status}`);
     const rows = (await res.json()) as unknown[];
     return Array.isArray(rows) && rows.length > 0;
+  }
+
+  // ---- Etapa 4: cadastro ----
+  async getRegistration(waId: string): Promise<RegistrationRecord> {
+    const cols = ["consent_at", "terms_version", "registered_at", ...FIELD_KEYS].join(",");
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&select=${cols}`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase getRegistration falhou: ${res.status}`);
+    const r = ((await res.json()) as Record<string, unknown>[])[0];
+    const d = (v: unknown) => (v ? new Date(v as string) : null);
+    const values: Record<string, string> = {};
+    for (const k of FIELD_KEYS) if (typeof r?.[k] === "string") values[k] = r[k] as string;
+    return {
+      consentAt: d(r?.consent_at), termsVersion: (r?.terms_version as string | null) ?? null,
+      registeredAt: d(r?.registered_at), values,
+    };
+  }
+
+  async saveRegistration(waId: string, p: RegistrationPatch): Promise<void> {
+    const body: Record<string, unknown> = {};
+    if (p.waIdHash) body.wa_id_hash = p.waIdHash;
+    if (p.consentAt) body.consent_at = p.consentAt.toISOString();
+    if (p.termsVersion) body.terms_version = p.termsVersion;
+    if (p.registeredAt) body.registered_at = p.registeredAt.toISOString();
+    for (const [k, v] of Object.entries(p.values ?? {})) if (FIELD_KEYS.includes(k)) body[k] = v;
+    const res = await this.fetchImpl(`${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}`, {
+      method: "PATCH",
+      headers: this.headers({ Prefer: "return=representation" }),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`supabase saveRegistration falhou: ${res.status}`);
+    const rows = (await res.json()) as unknown[];
+    if (!Array.isArray(rows) || rows.length === 0) throw new Error("supabase saveRegistration: usuario inexistente");
   }
 
   async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
