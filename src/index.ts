@@ -1,19 +1,57 @@
 import { loadConfig } from "./config";
-import { createLogger } from "./lib/logger";
+import { SupabaseRepo } from "./db/supabase-repo";
+import type { Repo } from "./db/repo";
+import { createLogger, type Logger } from "./lib/logger";
+import { handleVerification, handleWebhookPost, type EventHandler, type WaitUntilCtx } from "./webhook/handler";
 
 export type Env = Record<string, unknown> & { AUDIOS?: R2Bucket };
 
-export function handleRequest(request: Request): Response {
-  const { pathname } = new URL(request.url);
-  if (request.method === "GET" && pathname === "/health") {
+export interface AppDeps {
+  appSecret: string;
+  verifyToken: string;
+  repo: Repo;
+  logger: Logger;
+  onEvent?: EventHandler;
+  now?: () => Date;
+}
+
+/** Roteador puro: recebe dependências já montadas (testável sem env). */
+export async function route(request: Request, ctx: WaitUntilCtx, deps: AppDeps | null): Promise<Response> {
+  const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname === "/health") {
     return new Response("ok", { status: 200 });
+  }
+  if (url.pathname === "/webhook") {
+    if (!deps) return new Response("server misconfigured", { status: 500 });
+    if (request.method === "GET") return handleVerification(url, deps.verifyToken);
+    if (request.method === "POST") return handleWebhookPost(request, ctx, deps);
+    return new Response("method not allowed", { status: 405 });
   }
   return new Response("not found", { status: 404 });
 }
 
+function buildDeps(env: Env, logger: Logger): AppDeps | null {
+  try {
+    const cfg = loadConfig(env);
+    return {
+      appSecret: cfg.appSecret,
+      verifyToken: cfg.verifyToken,
+      repo: new SupabaseRepo(cfg.supabaseUrl, cfg.supabaseServiceKey),
+      logger,
+    };
+  } catch (e) {
+    logger.log("error", "config_invalid", { message: (e as Error).message });
+    return null;
+  }
+}
+
 export default {
-  async fetch(request: Request): Promise<Response> {
-    return handleRequest(request);
+  async fetch(request: Request, env: Env = {}, ctx?: ExecutionContext): Promise<Response> {
+    const logger = createLogger();
+    const pathname = new URL(request.url).pathname;
+    const deps = pathname === "/webhook" ? buildDeps(env, logger) : null;
+    const safeCtx: WaitUntilCtx = ctx ?? { waitUntil: () => undefined };
+    return route(request, safeCtx, deps);
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     // Cron diário: tarefas das próximas etapas. Por ora só valida a config.
