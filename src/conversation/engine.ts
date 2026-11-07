@@ -3,7 +3,7 @@ import type { Repo } from "../db/repo";
 import { hashWaId } from "../lib/hash";
 import { maskPhone, type Logger } from "../lib/logger";
 import type { OutboundMessage, SendResult } from "../whatsapp/client";
-import type { IncomingMessage } from "../whatsapp/types";
+import type { AudioEvent, IncomingMessage } from "../whatsapp/types";
 import {
   decideRegistration, isRegistrationState, registrationPrompt, type RegDecision, type RegistrationContext,
   type RegistrationEffect,
@@ -22,6 +22,8 @@ export interface EngineDeps {
   /** Cadastro (Etapa 4). Sem isto, vale o comportamento provisório da Etapa 3. */
   /** Conteúdo do banco com cache (Etapa 5). Sem isto, valem os textos e serviços do código. */
   content?: { load(): Promise<Content> };
+  /** Pipeline de áudio (Etapa 6). Sem isto, o áudio só muda o estado (comportamento da Etapa 3). */
+  audio?: { process(msg: AudioEvent, hintAlreadySent: boolean): Promise<unknown> };
   registration?: { flowId?: string; privacyUrl: string; termsVersion: string };
 }
 
@@ -93,6 +95,14 @@ export async function handleIncomingMessage(msg: IncomingMessage, deps: EngineDe
       const result = await deps.send({ to: msg.from, ...reply });
       if (result.status !== "sent") {
         deps.logger.log("info", "reply_not_sent", { from: maskPhone(msg.from), status: result.status });
+      }
+    }
+    // Áudio aceito: processa no mesmo tratamento do evento (a URL da mídia expira em 5 min).
+    if (deps.audio && msg.type === "audio" && user.state === "AWAIT_AUDIO" && d.nextState.state === "PROCESSING_AUDIO") {
+      try {
+        await deps.audio.process(msg, user.hintSentInState);
+      } catch {
+        deps.logger.log("error", "audio_process_failed", { from: maskPhone(msg.from) });
       }
     }
     return;

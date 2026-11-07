@@ -203,6 +203,8 @@ export function decide(
 
   const t = def.transitions.find((tr) => matches(tr.on, input, intents));
   if (t) {
+    // Áudio com a pessoa no limite: o resultado não poderia ser entregue, então nem processa (estado não avança).
+    if (t.on.kind === "audio" && limited(counters)) return { replies: [], nextState: user, outcome: "limited" };
     return finish(user, clearService(moveTo(user, t.to, now)), t.reply ? [t.reply(content)] : [], counters, t.reply ? "reply" : "transition");
   }
 

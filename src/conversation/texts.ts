@@ -22,6 +22,9 @@ export const TEXTS = {
   hintRegistration: "Para continuar, preencha o formulário de cadastro que enviamos acima.",
   hintMenu: "Escolha um serviço no menu acima ou envie *menu* para ver as opções.",
   hintAudio: "Envie um áudio para análise ou envie *menu* para voltar ao início.",
+  audioInvalid: "Não consegui usar esse arquivo. Envie um áudio (nota de voz ou arquivo de áudio) menor, ou envie *menu* para voltar ao início.",
+  audioFailed: "Não consegui analisar o seu áudio agora. Envie o áudio de novo ou envie *menu* para voltar ao início.",
+  audioResultFallback: "Análise concluída.",
   resumeNew: "Que bom ter você de volta! Para começar, envie *oi*.",
 } as const;
 
@@ -41,6 +44,8 @@ export const REPLIES = {
   hintMenu: fromKey("hintMenu"),
   hintAudio: fromKey("hintAudio"),
   resumeNew: fromKey("resumeNew"),
+  audioInvalid: fromKey("audioInvalid"),
+  audioFailed: fromKey("audioFailed"),
 } as const;
 
 /** Todos os textos que o bot pode enviar (varridos pelo teste C3.9). */

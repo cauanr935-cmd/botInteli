@@ -1,0 +1,411 @@
+import { describe, it, expect, vi } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
+import { MemoryRepo } from "../src/db/memory-repo";
+import { handleIncomingMessage } from "../src/conversation/engine";
+import { ContentProvider } from "../src/services/provider";
+import { processAudio, MEDIA_URL_TTL_MS } from "../src/audio/pipeline";
+import { AnalyzerError, HttpAudioAnalyzer, MockAudioAnalyzer, type AudioAnalyzer } from "../src/audio/analyzer";
+import { MemoryAudioStore } from "../src/audio/storage";
+import { createMediaClient, sendGuarded, type DownloadResult, type MediaClient, type MediaInfo } from "../src/whatsapp/client";
+import { processEvents } from "../src/webhook/handler";
+import { hashWaId } from "../src/lib/hash";
+import type { Logger } from "../src/lib/logger";
+import type { AudioEvent, IncomingMessage, WebhookEvent } from "../src/whatsapp/types";
+
+const T0 = new Date("2026-11-10T15:00:00Z");
+const WA = "5511987651234";
+let seq = 0;
+const audio = (extra: Partial<AudioEvent> = {}): AudioEvent => ({
+  type: "audio", wamid: `a${++seq}`, from: WA, mediaId: "MEDIA1", voice: true, mimeType: "audio/ogg; codecs=opus", ...extra,
+});
+const text = (body: string): IncomingMessage => ({ type: "text", wamid: `a${++seq}`, from: WA, body });
+const list = (id: string): IncomingMessage => ({ type: "list_reply", wamid: `a${++seq}`, from: WA, id, title: "x" });
+const bytes = (n = 100) => new Uint8Array(n).fill(7);
+
+interface Opts {
+  analyzer?: AudioAnalyzer;
+  info?: () => Promise<MediaInfo>;
+  download?: (url: string) => Promise<DownloadResult>;
+  maxAudioBytes?: number;
+  maxPer10Min?: number;
+  consent?: boolean;
+  state?: string;
+}
+
+function setup(o: Opts = {}) {
+  const logs: { level: string; event: string }[] = [];
+  const logger: Logger = { log: (level, event) => void logs.push({ level, event }) };
+  const repo = new MemoryRepo();
+  let t = T0.getTime();
+  let step = 0;
+  const now = () => { const d = new Date(t); t += step; return d; };
+  const warp = (ms: number) => { t += ms; };
+  const graph = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: `o${++seq}` }] }), { status: 200 }));
+  const getInfo = vi.fn(o.info ?? (async () => ({ url: "https://cdn.example/a", mimeType: "audio/ogg", fileSize: 100 })));
+  const download = vi.fn(o.download ?? (async () => ({ ok: true, bytes: bytes() }) as DownloadResult));
+  const media: MediaClient = { getInfo, download };
+  const store = new MemoryAudioStore();
+  const analyzer = o.analyzer ?? new MockAudioAnalyzer();
+  const provider = new ContentProvider(repo, logger, 60_000, () => t);
+  const send = (m: Parameters<typeof sendGuarded>[0]) =>
+    sendGuarded(m, {
+      repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 950,
+      timezone: "America/Sao_Paulo", fetchImpl: graph as unknown as typeof fetch, now,
+    });
+  const maxPer10Min = o.maxPer10Min ?? 50;
+  const audioDeps = {
+    repo, logger, send, media, store, analyzer, content: provider, maxAudioBytes: o.maxAudioBytes ?? 16_000_000,
+    maxPerDay: 50, maxPer10Min, timezone: "America/Sao_Paulo", now, uuid: () => `00000000-0000-4000-8000-00000000000${++seq % 10}`,
+  };
+  const deps = {
+    repo, logger, send, maxPerDay: 50, maxPer10Min, now, content: provider,
+    audio: { process: (m: AudioEvent, h: boolean) => processAudio(m, h, audioDeps) },
+  };
+  const feed = async (ev: IncomingMessage) => {
+    await processEvents([ev], {
+      appSecret: "", verifyToken: "", repo, logger, now,
+      onEvent: async (e: WebhookEvent) => { if (e.type !== "status") await handleIncomingMessage(e, deps); },
+    });
+  };
+  const sent = () => graph.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string));
+  const hash = hashWaId(WA);
+  const ready = async () => {
+    repo.services = [
+      { id: "audio", title: "Análise de áudio", description: "d", requiresAudio: true, sortOrder: 1 },
+      { id: "horarios", title: "Horários", description: "d", requiresAudio: false, sortOrder: 2 },
+    ];
+    await repo.touchUser(WA, new Date(t));
+    if (o.consent !== false) {
+      repo.registrations.set(WA, {
+        consentAt: T0, termsVersion: "v1", registeredAt: T0, values: {}, waIdHash: await hash,
+      });
+    }
+    repo.conversations.set(WA, {
+      state: o.state ?? "AWAIT_AUDIO", previousState: null, hintSentInState: false, optedOutAt: null, version: 1,
+    });
+  };
+  return { repo, graph, getInfo, download, store, analyzer, feed, sent, logs, ready, warp, setStep: (ms: number) => { step = ms; }, audioDeps, hash };
+}
+
+describe("C6.1 URL da mídia expira em 5 minutos", () => {
+  it("C6.1 baixa dentro do mesmo processamento do evento (antes de feed resolver)", async () => {
+    const s = setup();
+    await s.ready();
+    await s.feed(audio());
+    expect(s.getInfo).toHaveBeenCalledTimes(1);
+    expect(s.download).toHaveBeenCalledTimes(1);
+    expect(s.download).toHaveBeenCalledWith("https://cdn.example/a", 16_000_000);
+  });
+
+  it("C6.1 relógio falso: atraso acima de 5 min é detectado e pede nova URL uma única vez", async () => {
+    const s = setup({
+      info: vi.fn(async () => ({ url: "https://cdn.example/a", mimeType: "audio/ogg" })) as () => Promise<MediaInfo>,
+    });
+    await s.ready();
+    s.setStep(MEDIA_URL_TTL_MS + 1000); // cada leitura do relógio avança 5 min + 1 s
+    await s.feed(audio());
+    expect(s.getInfo).toHaveBeenCalledTimes(2); // original + renovada (nunca mais que uma)
+    expect(s.download).toHaveBeenCalledTimes(1);
+  });
+
+  it("C6.1 URL expirada no download (403): tenta nova URL uma vez e conclui", async () => {
+    let n = 0;
+    const s = setup({ download: async () => (++n === 1 ? { ok: false, reason: "expired" } : { ok: true, bytes: bytes() }) });
+    await s.ready();
+    await s.feed(audio());
+    expect(s.getInfo).toHaveBeenCalledTimes(2);
+    expect(s.download).toHaveBeenCalledTimes(2);
+    expect(s.sent()).toHaveLength(1);
+    expect(s.repo.audios.size).toBe(1);
+  });
+
+  it("C6.1 continua expirada depois da renovação: dica única e nada de analisador", async () => {
+    const s = setup({ download: async () => ({ ok: false, reason: "expired" }) });
+    await s.ready();
+    await s.feed(audio());
+    expect(s.getInfo).toHaveBeenCalledTimes(2);
+    expect(s.download).toHaveBeenCalledTimes(2);
+    expect((s.analyzer as MockAudioAnalyzer).calls).toHaveLength(0);
+    expect(s.sent()).toHaveLength(1);
+    await s.feed(audio()); // segunda falha igual: silêncio
+    expect(s.sent()).toHaveLength(1);
+    expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
+  });
+
+  it("C6.1 cliente de mídia: GET /{media_id} com token e download com token", async () => {
+    const calls: { url: string; auth: string | null }[] = [];
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, auth: new Headers(init?.headers).get("authorization") });
+      return url.includes("graph.facebook.com")
+        ? new Response(JSON.stringify({ url: "https://cdn.example/x", mime_type: "audio/ogg", file_size: 3 }))
+        : new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/ogg" } });
+    });
+    const c = createMediaClient({ whatsappToken: "TOK", graphApiVersion: "v21.0", fetchImpl: f as unknown as typeof fetch });
+    const info = await c.getInfo("ID_1");
+    expect(info).toEqual({ url: "https://cdn.example/x", mimeType: "audio/ogg", fileSize: 3 });
+    const dl = await c.download(info.url, 10);
+    expect(dl).toMatchObject({ ok: true });
+    expect(calls.map((x) => x.auth)).toEqual(["Bearer TOK", "Bearer TOK"]);
+    expect(calls[0]!.url).toBe("https://graph.facebook.com/v21.0/ID_1");
+    await expect(c.getInfo("../x")).rejects.toThrow();
+    expect(await c.download(info.url, 2)).toEqual({ ok: false, reason: "too_large" });
+  });
+});
+
+describe("C6.2 armazenamento", () => {
+  it("C6.2 salva no R2 (mock) com chave audios/<hash>/<YYYY-MM>/<uuid>.<ext> sem o telefone", async () => {
+    const s = setup();
+    await s.ready();
+    await s.feed(audio());
+    expect(s.store.objects.size).toBe(1);
+    const key = [...s.store.objects.keys()][0]!;
+    expect(key).toMatch(/^audios\/[0-9a-f]{64}\/2026-11\/[0-9a-f-]+\.ogg$/);
+    expect(key).not.toContain(WA);
+    expect(key).toContain(await s.hash);
+    const row = [...s.repo.audios.values()][0]!;
+    expect(row).toMatchObject({ r2Key: key, mime: "audio/ogg", bytes: 100, status: "done", serviceId: "audio", waIdHash: await s.hash });
+    expect(row.finishedAt).not.toBeNull();
+    expect(JSON.stringify(row)).not.toContain(WA);
+  });
+});
+
+describe("C6.3 fluxo feliz", () => {
+  it("C6.3 1 áudio -> 1 mensagem (texto do resultado + botão Menu) e volta a AWAIT_AUDIO", async () => {
+    const s = setup({ analyzer: new MockAudioAnalyzer(() => ({ text: "Tudo certo", raw: { text: "Tudo certo" } })) });
+    await s.ready();
+    await s.feed(audio());
+    const out = s.sent();
+    expect(out).toHaveLength(1);
+    expect(out[0].interactive.type).toBe("button");
+    expect(out[0].interactive.body.text).toBe("Tudo certo");
+    expect(out[0].interactive.action.buttons[0].reply.id).toBe("menu");
+    expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
+  });
+
+  it("C6.3 3 áudios seguidos (um de cada vez) -> 3 mensagens, sem nova instrução", async () => {
+    const s = setup();
+    await s.ready();
+    for (let i = 0; i < 3; i++) await s.feed(audio());
+    expect(s.sent()).toHaveLength(3);
+    expect(s.repo.audios.size).toBe(3);
+  });
+
+  it("C6.3 caminho completo do menu: escolher serviço (1) + áudio (1) = 2 mensagens", async () => {
+    const s = setup({ state: "MENU" });
+    await s.ready();
+    await s.feed(list("svc_audio"));
+    await s.feed(audio());
+    expect(s.sent()).toHaveLength(2);
+  });
+
+  it("C6.3 resultado longo é cortado em 1024 caracteres", async () => {
+    const s = setup({ analyzer: new MockAudioAnalyzer(() => ({ text: "x".repeat(3000), raw: {} })) });
+    await s.ready();
+    await s.feed(audio());
+    expect(s.sent()[0].interactive.body.text.length).toBeLessThanOrEqual(1024);
+  });
+});
+
+describe("C6.4 analisador lento ou com erro", () => {
+  it("C6.4 HTTP: 2 novas tentativas com espera crescente e depois falha", async () => {
+    const sleeps: number[] = [];
+    const f = vi.fn(async () => new Response("erro", { status: 503 }));
+    const a = new HttpAudioAnalyzer({ url: "https://an.example", apiKey: "k", fetchImpl: f as unknown as typeof fetch, sleep: async (ms) => void sleeps.push(ms) });
+    await expect(a.analyze({ bytes: bytes(), mime: "audio/ogg" })).rejects.toBeInstanceOf(AnalyzerError);
+    expect(f).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([500, 1000]);
+  });
+
+  it("C6.4 HTTP: sucesso na 2ª tentativa devolve o resultado; 4xx não repete", async () => {
+    let n = 0;
+    const f = vi.fn(async () => (++n === 1 ? new Response("x", { status: 500 }) : new Response(JSON.stringify({ summary: "ok!" }))));
+    const a = new HttpAudioAnalyzer({ url: "https://an.example", apiKey: "k", fetchImpl: f as unknown as typeof fetch, sleep: async () => undefined });
+    expect((await a.analyze({ bytes: bytes(), mime: "audio/ogg" })).text).toBe("ok!");
+    const g = vi.fn(async () => new Response("no", { status: 400 }));
+    const b = new HttpAudioAnalyzer({ url: "https://an.example", apiKey: "k", fetchImpl: g as unknown as typeof fetch, sleep: async () => undefined });
+    await expect(b.analyze({ bytes: bytes(), mime: "audio/ogg" })).rejects.toThrow();
+    expect(g).toHaveBeenCalledTimes(1);
+  });
+
+  it("C6.4 HTTP: respeita o timeout de cada tentativa (aborta a requisição lenta)", async () => {
+    const f = vi.fn((_u: string, init?: RequestInit) => new Promise<Response>((_res, rej) => {
+      init?.signal?.addEventListener("abort", () => rej(new Error("abort")));
+    }));
+    const a = new HttpAudioAnalyzer({ url: "https://an.example", apiKey: "k", timeoutMs: 20, backoffMs: 1, fetchImpl: f as unknown as typeof fetch });
+    const t0 = Date.now();
+    await expect(a.analyze({ bytes: bytes(), mime: "audio/ogg" })).rejects.toMatchObject({ message: "timeout" });
+    expect(f).toHaveBeenCalledTimes(3);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
+  it("C6.4 falha definitiva: no máximo 1 mensagem de erro, mesmo com falhas seguidas", async () => {
+    const s = setup({ analyzer: new MockAudioAnalyzer(() => { throw new AnalyzerError("x", false); }) });
+    await s.ready();
+    await s.feed(audio());
+    await s.feed(audio());
+    await s.feed(audio());
+    expect(s.sent()).toHaveLength(1);
+    expect(s.sent()[0].text.body).toMatch(/de novo/);
+    expect([...s.repo.audios.values()].every((a) => a.status === "failed")).toBe(true);
+    expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
+  });
+
+  it("C6.4 a mensagem de erro conta no orçamento (reserva) e nos limites da pessoa", async () => {
+    const s = setup({ analyzer: new MockAudioAnalyzer(() => { throw new Error("x"); }) });
+    await s.ready();
+    await s.feed(audio());
+    expect(s.repo.outbound).toHaveLength(1);
+    expect((await s.repo.getBudget("PN", "2026-11"))?.reservedCount).toBe(1);
+  });
+
+  it("C6.4 depois de um erro, um áudio bom volta a responder o resultado", async () => {
+    let n = 0;
+    const s = setup({ analyzer: new MockAudioAnalyzer(() => { if (++n === 1) throw new Error("x"); return { text: "bom", raw: {} }; }) });
+    await s.ready();
+    await s.feed(audio());
+    await s.feed(audio());
+    expect(s.sent()).toHaveLength(2);
+    expect(s.sent()[1].interactive.body.text).toBe("bom");
+  });
+
+  it("C6.4 limite por pessoa: sem vaga, silêncio (resultado salvo)", async () => {
+    const s = setup({ maxPer10Min: 1 });
+    await s.ready();
+    await s.feed(audio());
+    expect(s.sent()).toHaveLength(1);
+    await s.feed(audio()); // já no limite: nem processa
+    expect(s.sent()).toHaveLength(1);
+    expect(s.repo.audios.size).toBe(1);
+  });
+});
+
+describe("C6.5 janela de 24h", () => {
+  it("C6.5 resultado depois de 24h da última mensagem: não envia e salva o resultado", async () => {
+    const s = setup({ analyzer: undefined });
+    const slow = new MockAudioAnalyzer(() => { s.warp(24 * 3600 * 1000); return { text: "tarde", raw: { text: "tarde" } }; });
+    s.audioDeps.analyzer = slow;
+    await s.ready();
+    await s.feed(audio());
+    expect(s.graph).not.toHaveBeenCalled();
+    const row = [...s.repo.audios.values()][0]!;
+    expect(row.status).toBe("done");
+    expect(row.result).toEqual({ text: "tarde" });
+    expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
+  });
+});
+
+describe("C6.6 tipo ou tamanho inválido", () => {
+  it("C6.6 tipo não-áudio no webhook: não chama a Graph nem o analisador; dica única", async () => {
+    const s = setup();
+    await s.ready();
+    await s.feed(audio({ mimeType: "video/mp4" }));
+    await s.feed(audio({ mimeType: "video/mp4" }));
+    expect(s.getInfo).not.toHaveBeenCalled();
+    expect((s.analyzer as MockAudioAnalyzer).calls).toHaveLength(0);
+    expect(s.sent()).toHaveLength(1);
+    expect(s.repo.audios.size).toBe(0);
+  });
+
+  it("C6.6 tamanho informado acima de MAX_AUDIO_BYTES: não baixa nem analisa; dica única", async () => {
+    const s = setup({ maxAudioBytes: 50 });
+    await s.ready();
+    await s.feed(audio());
+    await s.feed(audio());
+    expect(s.download).not.toHaveBeenCalled();
+    expect((s.analyzer as MockAudioAnalyzer).calls).toHaveLength(0);
+    expect(s.sent()).toHaveLength(1);
+  });
+
+  it("C6.6 arquivo baixado maior que o limite (tamanho informado mentiu): não guarda nem analisa", async () => {
+    const s = setup({ maxAudioBytes: 50, info: async () => ({ url: "https://cdn.example/a", mimeType: "audio/ogg" }), download: async () => ({ ok: true, bytes: bytes(80) }) });
+    await s.ready();
+    await s.feed(audio());
+    expect(s.store.objects.size).toBe(0);
+    expect((s.analyzer as MockAudioAnalyzer).calls).toHaveLength(0);
+    expect(s.sent()).toHaveLength(1);
+  });
+
+  it("C6.6 mime ausente em todo lugar: inválido", async () => {
+    const s = setup({ info: async () => ({ url: "https://cdn.example/a" }) });
+    await s.ready();
+    await s.feed(audio({ mimeType: undefined as unknown as string }));
+    expect((s.analyzer as MockAudioAnalyzer).calls).toHaveLength(0);
+  });
+});
+
+describe("C6.7 durante PROCESSING_AUDIO", () => {
+  it("C6.7 áudio e texto em PROCESSING_AUDIO: 0 envios e nada processado", async () => {
+    const s = setup({ state: "PROCESSING_AUDIO" });
+    await s.ready();
+    await s.feed(audio());
+    await s.feed(text("oi"));
+    await s.feed(text("menu"));
+    expect(s.graph).not.toHaveBeenCalled();
+    expect(s.getInfo).not.toHaveBeenCalled();
+    expect(s.repo.audios.size).toBe(0);
+  });
+
+  it("C6.7 'sair' durante o processamento é honrado e o resultado não é enviado", async () => {
+    const s = setup();
+    const slow = new MockAudioAnalyzer(async () => {
+      await s.feed(text("sair")); // chega no meio do processamento
+      return { text: "r", raw: {} };
+    });
+    s.audioDeps.analyzer = slow;
+    await s.ready();
+    await s.feed(audio());
+    expect((await s.repo.getConversation(WA)).state).toBe("OPTED_OUT");
+    expect(s.sent()).toHaveLength(1); // só a confirmação do opt-out
+    expect([...s.repo.audios.values()][0]!.status).toBe("done");
+  });
+});
+
+describe("C6.8 áudio fora de AWAIT_AUDIO e consentimento", () => {
+  for (const state of ["NEW", "AWAIT_REGISTRATION", "REG_CONSENT", "MENU", "OPTED_OUT"]) {
+    it(`C6.8 áudio em ${state}: nada baixado/salvo e nenhuma mensagem de áudio`, async () => {
+      const s = setup({ state, consent: state === "MENU" || state === "OPTED_OUT" });
+      await s.ready();
+      await s.feed(audio());
+      expect(s.getInfo).not.toHaveBeenCalled();
+      expect(s.download).not.toHaveBeenCalled();
+      expect(s.store.objects.size).toBe(0);
+      expect(s.repo.audios.size).toBe(0);
+      expect(s.graph).not.toHaveBeenCalled(); // áudio nunca gera dica (só texto gera)
+    });
+  }
+
+  it("C6.8 pipeline direto sem consentimento: não baixa, não guarda, não registra, não responde", async () => {
+    const s = setup({ consent: false });
+    await s.ready();
+    s.repo.conversations.set(WA, { state: "PROCESSING_AUDIO", previousState: null, hintSentInState: false, optedOutAt: null, version: 5 });
+    const out = await processAudio(audio(), false, s.audioDeps);
+    expect(out).toBe("no_consent");
+    expect(s.getInfo).not.toHaveBeenCalled();
+    expect(s.store.objects.size).toBe(0);
+    expect(s.graph).not.toHaveBeenCalled();
+  });
+
+  it("C6.8 o repositório recusa áudio sem consentimento (R6 também na camada de dados)", async () => {
+    const repo = new MemoryRepo();
+    await expect(
+      repo.insertAudio({ id: "i", waIdHash: "h", r2Key: "k", mime: "audio/ogg", bytes: 1, serviceId: null, status: "processing", result: null, createdAt: T0, finishedAt: null }),
+    ).rejects.toThrow();
+  });
+
+  it("C6.8 PGlite: gatilho recusa áudio sem consentimento e aceita com consentimento", async () => {
+    const dir = join(__dirname, "..", "supabase", "migrations");
+    const db = new PGlite();
+    for (const f of readdirSync(dir).sort()) await db.exec(readFileSync(join(dir, f), "utf8"));
+    const ins = (h: string) =>
+      db.query("insert into audios (id, wa_id_hash, r2_key, mime, bytes) values (gen_random_uuid(), $1, 'k', 'audio/ogg', 10)", [h]);
+    await db.query("insert into users (wa_id, last_user_message_at, wa_id_hash) values ('1', now(), 'h1')");
+    await expect(ins("h1")).rejects.toThrow();
+    await db.query("update users set consent_at = now(), terms_version = 'v1' where wa_id = '1'");
+    await ins("h1");
+    const r = await db.query<{ n: number }>("select count(*)::int as n from audios");
+    expect(r.rows[0]!.n).toBe(1);
+    await expect(ins("desconhecido")).rejects.toThrow();
+  });
+});

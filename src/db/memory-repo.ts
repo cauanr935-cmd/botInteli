@@ -2,7 +2,7 @@ import { MAX_STOP_AT } from "../config";
 import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
-  BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  AudioRecord, BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 export interface MemoryOutboundRow extends OutboundLogEntry {
@@ -85,6 +85,19 @@ export class MemoryRepo implements Repo {
   }
   async listCannedResponses(): Promise<Record<string, string>> {
     return Object.fromEntries(this.canned);
+  }
+  // ---- Etapa 6: áudios ----
+  readonly audios = new Map<string, AudioRecord>();
+  async insertAudio(rec: AudioRecord): Promise<void> {
+    // Mesma regra do gatilho do banco (R6): sem consentimento, nenhum áudio.
+    const ok = [...this.registrations.values()].some((r) => r.waIdHash === rec.waIdHash && r.consentAt !== null);
+    if (!ok) throw new Error("sem consentimento");
+    this.audios.set(rec.id, { ...rec });
+  }
+  async finishAudio(id: string, status: "done" | "failed", result: unknown, at: Date): Promise<void> {
+    const cur = this.audios.get(id);
+    if (!cur) throw new Error("audio inexistente");
+    this.audios.set(id, { ...cur, status, result, finishedAt: at });
   }
   async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
     return this.outbound.filter((r) => r.waIdHash === waIdHash && r.reservedAt >= since).map((r) => r.reservedAt);

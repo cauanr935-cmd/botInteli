@@ -136,3 +136,66 @@ async function emitAlerts(
     // alerta é best-effort; nunca afeta a decisão de envio
   }
 }
+
+/** ---- Mídia recebida (Etapa 6) ---- */
+export interface MediaInfo {
+  url: string;
+  mimeType?: string;
+  fileSize?: number;
+}
+export type DownloadResult =
+  | { ok: true; bytes: Uint8Array; contentType?: string }
+  | { ok: false; reason: "expired" | "too_large" | "error" };
+
+export interface MediaClient {
+  /** GET /{media_id}: devolve a URL (expira em 5 min). */
+  getInfo(mediaId: string): Promise<MediaInfo>;
+  /** Baixa a URL com o token. Recusa acima de `maxBytes` (olha o Content-Length antes de ler). */
+  download(url: string, maxBytes: number): Promise<DownloadResult>;
+}
+
+export interface MediaClientOptions {
+  whatsappToken: string;
+  graphApiVersion: string;
+  fetchImpl?: typeof fetch;
+}
+
+export function createMediaClient(o: MediaClientOptions): MediaClient {
+  const f = o.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  const auth = { Authorization: `Bearer ${o.whatsappToken}` };
+  return {
+    async getInfo(mediaId) {
+      if (!/^[A-Za-z0-9_-]{1,100}$/.test(mediaId)) throw new Error("media_id inválido");
+      const res = await f(`https://graph.facebook.com/${o.graphApiVersion}/${mediaId}`, { headers: auth });
+      if (!res.ok) throw new Error(`media_info_http_${res.status}`);
+      const j = (await res.json()) as { url?: unknown; mime_type?: unknown; file_size?: unknown };
+      if (typeof j.url !== "string" || !j.url.startsWith("https://")) throw new Error("media_info_sem_url");
+      return {
+        url: j.url,
+        ...(typeof j.mime_type === "string" ? { mimeType: j.mime_type } : {}),
+        ...(typeof j.file_size === "number" ? { fileSize: j.file_size } : {}),
+      };
+    },
+    async download(url, maxBytes) {
+      if (!url.startsWith("https://")) return { ok: false, reason: "error" };
+      let res: Response;
+      try {
+        res = await f(url, { headers: auth });
+      } catch {
+        return { ok: false, reason: "error" };
+      }
+      if ([401, 403, 404, 410].includes(res.status)) return { ok: false, reason: "expired" };
+      if (!res.ok) return { ok: false, reason: "error" };
+      const len = Number(res.headers.get("content-length"));
+      if (Number.isFinite(len) && len > maxBytes) return { ok: false, reason: "too_large" };
+      try {
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (bytes.length > maxBytes) return { ok: false, reason: "too_large" };
+        const ct = res.headers.get("content-type");
+        return { ok: true, bytes, ...(ct ? { contentType: ct } : {}) };
+      } catch {
+        return { ok: false, reason: "error" };
+      }
+    },
+  };
+}

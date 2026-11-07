@@ -29,6 +29,23 @@ export interface Repo extends BudgetRepo {
   listActiveServices(): Promise<Service[]>;
   /** Etapa 5: respostas prontas (chave -> texto). */
   listCannedResponses(): Promise<Record<string, string>>;
+  /** Etapa 6: registra o áudio guardado (o banco recusa se a pessoa não deu consentimento, R6). */
+  insertAudio(rec: AudioRecord): Promise<void>;
+  /** Etapa 6: fecha o processamento do áudio (resultado fica salvo mesmo que não seja enviado). */
+  finishAudio(id: string, status: "done" | "failed", result: unknown, at: Date): Promise<void>;
+}
+
+export interface AudioRecord {
+  id: string;
+  waIdHash: string;
+  r2Key: string;
+  mime: string;
+  bytes: number;
+  serviceId: string | null;
+  status: "processing" | "done" | "failed";
+  result: unknown;
+  createdAt: Date;
+  finishedAt: Date | null;
 }
 
 export interface RegistrationRecord {

@@ -1,6 +1,7 @@
 import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
+  AudioRecord,
   BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
@@ -265,5 +266,28 @@ export class SupabaseRepo implements Repo {
     if (!res.ok) throw new Error(`supabase listCannedResponses falhou: ${res.status}`);
     const rows = (await res.json()) as { key: string; text: string }[];
     return Object.fromEntries(rows.map((r) => [r.key, r.text]));
+  }
+
+  // ---- Etapa 6: áudios ----
+  async insertAudio(rec: AudioRecord): Promise<void> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/audios`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        id: rec.id, wa_id_hash: rec.waIdHash, r2_key: rec.r2Key, mime: rec.mime, bytes: rec.bytes,
+        service_id: rec.serviceId, status: rec.status, result: rec.result,
+        created_at: rec.createdAt.toISOString(),
+      }),
+    });
+    if (!res.ok) throw new Error(`supabase insertAudio falhou: ${res.status}`);
+  }
+
+  async finishAudio(id: string, status: "done" | "failed", result: unknown, at: Date): Promise<void> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/audios?id=eq.${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: this.headers(),
+      body: JSON.stringify({ status, result, finished_at: at.toISOString() }),
+    });
+    if (!res.ok) throw new Error(`supabase finishAudio falhou: ${res.status}`);
   }
 }

@@ -38,3 +38,8 @@ Coisas que só uma pessoa da equipe pode fazer. Os agentes acrescentam itens aqu
 - [ ] Testar o Flow no modo de pré-visualização e depois publicar (rascunho não pode ser enviado a usuários).
 - [ ] Copiar o ID do Flow para `WHATSAPP_FLOW_ID`. Sem ele, o bot usa o cadastro por perguntas (fallback).
 - [ ] Se trocar os campos do cadastro: editar `src/registration/fields.ts`, `flows/cadastro.json` e uma migração nova com as colunas.
+
+## Etapa 6 — Pipeline de áudio
+- [ ] Aplicar `supabase/migrations/0007_audios.sql` no Supabase.
+- [ ] Criar o bucket R2 `bot-whatsapp-audios` (binding `AUDIOS` já está no `wrangler.toml`) e definir política de retenção dos áudios (dado pessoal).
+- [ ] Fornecer o contrato da API de análise (formato de envio e de resposta). Sem `docs/ANALISADOR.md`, vale o adaptador genérico em `src/audio/analyzer.ts` (`HttpAudioAnalyzer`); ajustar só esse arquivo. Definir também `ANALYZER_API_URL` e `ANALYZER_API_KEY`.

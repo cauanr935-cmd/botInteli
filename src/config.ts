@@ -26,6 +26,7 @@ export interface Config {
   privacyPolicyUrl: string;
   termsVersion: string;
   maxAudioBytes: number;
+  analyzerTimeoutMs: number;
 }
 
 export class ConfigError extends Error {
@@ -104,6 +105,8 @@ export function loadConfig(env: Env): Config {
   const maxBotMsgsPerUserPer10Min = parseInteger(env, "MAX_BOT_MSGS_PER_USER_PER_10MIN", 4, 1, problems);
   const maxAudioBytes = parseInteger(env, "MAX_AUDIO_BYTES", 16_000_000, 1, problems);
 
+  const analyzerTimeoutMs = parseInteger(env, "ANALYZER_TIMEOUT_MS", 8000, 100, problems);
+
   if (problems.length > 0) throw new ConfigError(problems);
 
   const flow = opt("WHATSAPP_FLOW_ID", "");
@@ -114,6 +117,6 @@ export function loadConfig(env: Env): Config {
     budgetSafetyMargin, stopAt,
     maxBotMsgsPerUserPerDay, maxBotMsgsPerUserPer10Min,
     ...(flow ? { whatsappFlowId: flow } : {}),
-    privacyPolicyUrl, termsVersion, maxAudioBytes,
+    privacyPolicyUrl, termsVersion, maxAudioBytes, analyzerTimeoutMs,
   };
 }
