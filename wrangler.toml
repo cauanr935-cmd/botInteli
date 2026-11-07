@@ -1,0 +1,22 @@
+name = "bot-whatsapp"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["0 6 * * *"]
+
+[[r2_buckets]]
+binding = "AUDIOS"
+bucket_name = "bot-whatsapp-audios"
+
+# Segredos (WHATSAPP_TOKEN, APP_SECRET, SUPABASE_SERVICE_KEY, ANALYZER_API_KEY,
+# ADMIN_TOKEN, VERIFY_TOKEN) entram via `wrangler secret put`, nunca aqui.
+[vars]
+GRAPH_API_VERSION = "v21.0"
+META_ACCOUNT_TIMEZONE = "America/Sao_Paulo"
+BUDGET_SAFETY_MARGIN = "50"
+MAX_BOT_MSGS_PER_USER_PER_DAY = "12"
+MAX_BOT_MSGS_PER_USER_PER_10MIN = "4"
+TERMS_VERSION = "2025-01"
+MAX_AUDIO_BYTES = "16000000"

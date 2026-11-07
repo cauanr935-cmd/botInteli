@@ -4,7 +4,7 @@ Atualizado pelo orquestrador ao fim de cada etapa. Status possíveis: `PENDENTE`
 
 | Etapa | Nome | Status | Tentativas | Data |
 | --- | --- | --- | --- | --- |
-| 0 | Fundação do projeto | PENDENTE | 0 | |
+| 0 | Fundação do projeto | APROVADA | 2 | 2026-11-07 |
 | 1 | Webhook seguro e idempotente | PENDENTE | 0 | |
 | 2 | Disjuntor de orçamento | PENDENTE | 0 | |
 | 3 | Motor de conversa com anti-spam | PENDENTE | 0 | |
