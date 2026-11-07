@@ -1,15 +1,12 @@
 import { handleAdmin, type AdminDeps } from "./admin/budget";
-import { handleStatusEvent } from "./budget/status";
 import { loadConfig } from "./config";
-import { handleIncomingMessage } from "./conversation/engine";
-import { createMediaClient, sendGuarded } from "./whatsapp/client";
+import { createMediaClient } from "./whatsapp/client";
 import { HttpAudioAnalyzer } from "./audio/analyzer";
-import { processAudio } from "./audio/pipeline";
 import { R2AudioStore } from "./audio/storage";
 import { SupabaseRepo } from "./db/supabase-repo";
 import type { Repo } from "./db/repo";
 import { ContentProvider } from "./services/provider";
-import type { AudioEvent } from "./whatsapp/types";
+import { createEventHandler } from "./webhook/events";
 import { runScheduled } from "./ops/scheduled";
 import { createLogger, type Logger } from "./lib/logger";
 import { handleVerification, handleWebhookPost, type EventHandler, type WaitUntilCtx } from "./webhook/handler";
@@ -63,43 +60,18 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
       verifyToken: cfg.verifyToken,
       repo,
       logger,
-      // Status webhooks: pricing -> outbound_log e trava manual (R1).
-      onEvent: async (ev) => {
-        if (ev.type === "status") {
-          await handleStatusEvent(ev, { repo, logger, phoneNumberId: cfg.phoneNumberId });
-          return;
-        }
-        // Mensagens: motor de conversa -> decide -> sendGuarded (R1/R2).
-        const send = (message: Parameters<typeof sendGuarded>[0]) =>
-          sendGuarded(message, {
-            repo, logger, phoneNumberId: cfg.phoneNumberId, whatsappToken: cfg.whatsappToken,
-            graphApiVersion: cfg.graphApiVersion, stopAt: cfg.stopAt, timezone: cfg.metaAccountTimezone,
-          });
-        if (!env.AUDIOS) logger.log("error", "r2_binding_missing");
-        const audio = env.AUDIOS
+      onEvent: createEventHandler(cfg, {
+        repo, logger, content,
+        ...(env.AUDIOS
           ? {
-              process: (m: AudioEvent, hintAlreadySent: boolean) =>
-                processAudio(m, hintAlreadySent, {
-                  repo, logger, send, content,
-                  media: createMediaClient({ whatsappToken: cfg.whatsappToken, graphApiVersion: cfg.graphApiVersion }),
-                  store: new R2AudioStore(env.AUDIOS as R2Bucket),
-                  analyzer: new HttpAudioAnalyzer({ url: cfg.analyzerApiUrl, apiKey: cfg.analyzerApiKey, timeoutMs: cfg.analyzerTimeoutMs }),
-                  maxAudioBytes: cfg.maxAudioBytes, maxPerDay: cfg.maxBotMsgsPerUserPerDay,
-                  maxPer10Min: cfg.maxBotMsgsPerUserPer10Min, timezone: cfg.metaAccountTimezone,
-                }),
+              audio: {
+                media: createMediaClient({ whatsappToken: cfg.whatsappToken, graphApiVersion: cfg.graphApiVersion }),
+                store: new R2AudioStore(env.AUDIOS),
+                analyzer: new HttpAudioAnalyzer({ url: cfg.analyzerApiUrl, apiKey: cfg.analyzerApiKey, timeoutMs: cfg.analyzerTimeoutMs }),
+              },
             }
-          : undefined;
-        await handleIncomingMessage(ev, {
-          ...(audio ? { audio } : {}), send,
-          repo, logger, content,
-          maxPerDay: cfg.maxBotMsgsPerUserPerDay,
-          maxPer10Min: cfg.maxBotMsgsPerUserPer10Min,
-          registration: {
-            ...(cfg.whatsappFlowId ? { flowId: cfg.whatsappFlowId } : {}),
-            privacyUrl: cfg.privacyPolicyUrl, termsVersion: cfg.termsVersion,
-          },
-        });
-      },
+          : (logger.log("error", "r2_binding_missing"), {})),
+      }),
       admin: {
         adminToken: cfg.adminToken, repo, logger, phoneNumberId: cfg.phoneNumberId,
         stopAt: cfg.stopAt, timezone: cfg.metaAccountTimezone,

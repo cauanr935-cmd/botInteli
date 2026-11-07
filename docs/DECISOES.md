@@ -86,3 +86,10 @@ Decisões tomadas pelos agentes sem consultar o humano. Formato: data · etapa �
 - **Novos métodos do `Repo`**: `ping`, `deleteProcessedBefore`, `releaseStuckProcessing`.
 - **Build offline**: `npm run build` = `wrangler deploy --dry-run --outdir dist` (não precisa de credenciais). O teste C7.2 roda o mesmo comando com `CLOUDFLARE_API_TOKEN` removido do ambiente.
 - **Cron em UTC** (`0 6 * * *`): sem impacto no orçamento; a virada do mês continua no fuso da conta Meta.
+
+## 2026-11-07 — Etapa 8 (simulação e auditoria)
+
+- **Fiação extraída para `src/webhook/events.ts` (`createEventHandler`)**: o `onEvent` que estava inline em `src/index.ts` virou função com portas injetáveis (fetch, relógio, mídia, R2, analisador). Comportamento de produção igual; o simulador usa exatamente a mesma fiação em vez de uma cópia. Único efeito colateral: o log `r2_binding_missing` sai uma vez por requisição de webhook (antes, por evento).
+- **Simulador em `scripts/simulate.ts`**, incluído no `tsconfig`. Roda pelos testes (`npm run simulate` = `vitest run tests/simulation.test.ts`); não há `tsx` no projeto e evitamos nova dependência.
+- **S6 pré-carrega novembro** com 950 reservas via `reserveSlot` (e não com tráfego), para isolar a virada do mês; S1 cobre o corte com tráfego real.
+- **S3 "voltando"**: nova sessão = "oi" 8 h depois (acima de `SESSION_IDLE_MS` de 6 h). O "áudio extra" é enviado 11 min depois, para sair da janela de 10 min por pessoa.
