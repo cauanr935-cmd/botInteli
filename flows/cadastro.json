@@ -24,22 +24,6 @@
                 "max-chars": 100
               },
               {
-                "type": "TextInput",
-                "name": "email",
-                "label": "E-mail",
-                "input-type": "email",
-                "required": true
-              },
-              {
-                "type": "TextInput",
-                "name": "city",
-                "label": "Cidade",
-                "input-type": "text",
-                "required": true,
-                "min-chars": 2,
-                "max-chars": 80
-              },
-              {
                 "type": "OptIn",
                 "name": "consent",
                 "label": "Li e aceito o termo de uso dos meus dados (LGPD)",
@@ -56,8 +40,6 @@
                   "name": "complete",
                   "payload": {
                     "full_name": "${form.full_name}",
-                    "email": "${form.email}",
-                    "city": "${form.city}",
                     "consent": "${form.consent}"
                   }
                 }

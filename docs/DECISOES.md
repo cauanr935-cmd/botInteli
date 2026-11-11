@@ -6,7 +6,7 @@ Decisões tomadas pelos agentes sem consultar o humano. Formato: data · etapa �
 | --- | --- | --- | --- |
 | (inicial) | — | Corte de orçamento padrão em 950 mensagens/mês (margem de 50 sobre as 1.000 grátis) | Folga para mensagens em trânsito e diferenças de contagem entre nós e a Meta |
 | (inicial) | — | Templates proibidos | Templates nunca entram na franquia gratuita |
-| (inicial) | — | Campos do cadastro provisórios: nome, e-mail, cidade | Ainda não definidos pela equipe; ficam num arquivo só para trocar fácil |
+| (inicial) | — | Campos do cadastro provisórios: nome, e-mail, cidade (substituídos em 2026-11-09) | Histórico; ver a decisão atual sobre cadastro por áudio |
 | 2026-11-07 | 0 | Cron diário `0 6 * * *` (UTC, 03h em Brasília) | Horário de baixo tráfego; a virada do mês da Meta é tratada por data no fuso da conta, não pelo cron |
 | 2026-11-07 | 0 | `GRAPH_API_VERSION` padrão `v21.0` no wrangler.toml e no exemplo | Versão estável conhecida; o humano pode atualizar via env sem mexer no código |
 | 2026-11-07 | 0 | Config obrigatória: todas as variáveis do plano exceto `WHATSAPP_FLOW_ID`, `META_ACCOUNT_TIMEZONE`, margem e limites (têm padrão) | Falhar cedo com mensagem clara; `loadConfig` lista todos os problemas de uma vez |
@@ -39,6 +39,7 @@ Decisões tomadas pelos agentes sem consultar o humano. Formato: data · etapa �
 | 2026-11-07 | 3 | Textos provisórios (boas-vindas sem formulário, menu sem serviços); `AWAIT_REGISTRATION` aceita qualquer `nfm_reply` e `AWAIT_AUDIO` leva a `PROCESSING_AUDIO` sem resposta | Validação do formulário, menu real e pipeline de áudio são das Etapas 4, 5 e 6 |
 | 2026-11-07 | 3 | `hashWaId` movido para `src/lib/hash.ts` (usado pelo cliente e pelo motor) | Evitar duplicar o hash; o cliente continua sendo o único arquivo com a URL da Graph |
 | 2026-11-07 | 4 | Campos do cadastro provisórios (nome completo, e-mail, cidade) em `src/registration/fields.ts`; trocar exige editar também `flows/cadastro.json` e uma migração (o teste C4.6 confere fields.ts x Flow) | Equipe ainda não definiu os campos definitivos |
+| 2026-11-09 | 4 | Cadastro coleta nome completo e aceite no Flow/fallback, depois solicita áudio de apresentação com perguntas pessoais; confirma "Cadastro concluído." sem abrir a lista de serviços. O menu fica disponível mediante pedido explícito "menu". | Solicitação da equipe; manter o consentimento LGPD e preservar acesso posterior aos serviços |
 | 2026-11-07 | 4 | Flow JSON versão `6.2`, uma tela terminal `CADASTRO`, sem endpoint (`complete` com payload). OptIn aponta para URL de exemplo que o humano troca pelo `PRIVACY_POLICY_URL` ao publicar | Flow JSON é estático (não lê env); versão a confirmar no editor da Meta (PENDENCIAS_HUMANAS) |
 | 2026-11-07 | 4 | Lógica do cadastro em `src/registration/decide.ts` (pura), chamada pelo motor antes de `decide`; devolve null para o que não é cadastro. Sem `deps.registration` o motor mantém o comportamento provisório da Etapa 3 | `machine.ts` continua pura e os testes das Etapas 3 não mudam |
 | 2026-11-07 | 4 | Fallback sem Flow: a mensagem de boas-vindas traz termo + botão "Aceito" + a pergunta do 1º campo; tocar "Aceito" (ou "sim") grava o consentimento e muda de estado SEM resposta | Atende C4.2 (1 + nº de campos mensagens) e economiza 1 mensagem; consentimento continua explícito (botão/"sim") antes de qualquer dado |
@@ -93,3 +94,53 @@ Decisões tomadas pelos agentes sem consultar o humano. Formato: data · etapa �
 - **Simulador em `scripts/simulate.ts`**, incluído no `tsconfig`. Roda pelos testes (`npm run simulate` = `vitest run tests/simulation.test.ts`); não há `tsx` no projeto e evitamos nova dependência.
 - **S6 pré-carrega novembro** com 950 reservas via `reserveSlot` (e não com tráfego), para isolar a virada do mês; S1 cobre o corte com tráfego real.
 - **S3 "voltando"**: nova sessão = "oi" 8 h depois (acima de `SESSION_IDLE_MS` de 6 h). O "áudio extra" é enviado 11 min depois, para sair da janela de 10 min por pessoa.
+
+## 2026-11-10 — Modo admin no chat de teste (assumir o lugar do bot)
+
+- **Escopo**: só o simulador web (`/chat`). Nada muda no webhook da Meta nem em `sendGuarded`; a mensagem do admin não passa pela Graph API. Se um dia o admin responder pelo WhatsApp real, a mensagem **tem** de passar por `sendGuarded` (R1).
+- **Login**: ícone de usuário no canto superior direito abre um pop-up discreto. Credenciais de teste pedidas pelo humano: usuário `Be My Mentor`, senha `Be My Mentor 321`, com padrão no código e troca possível por `CHAT_ADMIN_USER` / `CHAT_ADMIN_PASS`. Exceção consciente a R3 ("sem segredo no código"): sistema de teste, a pedido explícito. Trocar antes de qualquer uso real. O token de sessão é um SHA-256 de `ADMIN_TOKEN` + credenciais (sem estado no servidor), guardado em `sessionStorage`.
+- **Retenção (2 s)**: o admin usa o modo sobretudo para marcar mentorias e escrever o que o bot não escreveria, não para corrigi-lo; por isso a espera é de `ADMIN_HOLD_MS` = 2000 ms e, sem clique em "Responder eu", a resposta sai como programada. Com o admin online (sinal de vida na tela dos últimos 30 s), a resposta do bot é gravada como `pending` e só o admin a vê. "Enviar" libera; "Responder eu" (ou digitar no campo) descarta a retida e publica a mensagem do admin. Sem admin online, a retida é liberada sozinha na próxima leitura (a pessoa nunca fica sem resposta).
+- **Limitação**: o estado da conversa já avançou como se o bot tivesse respondido; se o admin escrever outra coisa, o próximo passo do bot continua do ponto em que o motor estava.
+- **Polling**: a tela consulta o histórico a cada 3 s (só se visível); a escrita de presença no R2 é limitada a 1 a cada 10 s.
+
+## 2026-11-10 — Devolver a conversa ao bot depois do admin
+
+- **Causa do silêncio**: quando o admin escrevia no lugar do bot, a resposta do bot era descartada, mas o estado dele já tinha avançado e a dica única do estado (R2) podia estar gasta. A conversa livre do admin não casa com o que o bot espera, então ele ficava mudo.
+- **Devolução** (`handBackToBot`): ao clicar em **Sair**, ou quando o admin some (sem sinal há 30 s) e a pessoa escreve de novo, o servidor zera `hint_sent_in_state` e, para quem já concluiu o cadastro, volta o estado a `COMPLETED` (a próxima mensagem é entendida pelo bot e pela IA, como na volta de cadastrado). Quem está no meio do cadastro continua no mesmo passo. Não envia nada (R1). Marcador `chat-sim/admin-takeover.json` no R2 garante que isso só roda se o admin realmente escreveu.
+- **Limite conhecido**: a IA (Grok) continua só classificando a mensagem atual; o contexto vem do estado e do cadastro no banco, não do texto das últimas mensagens.
+- **Contexto para a IA (autorizado pelo humano em 2026-11-10)**: no chat de teste, o Grok recebe também as últimas 6 mensagens de texto (`conversa_recente`, até 200 caracteres cada, rotuladas "pessoa" / "atendimento"), incluindo as escritas pelo admin; ele continua só **escolhendo** entre opções fechadas. Sem nome nem telefone, e só nos estados em que a IA já era consultada (após o consentimento). **No webhook real da Meta o contexto não existe**, porque o texto das conversas não é guardado (R3/R6); para ter contexto lá seria preciso guardar mensagens, decisão separada.
+
+## 2026-11-10 — Bot liga/desliga e certificado JSON da mentoria
+
+- **Substitui a retenção de 2 s**: o modo admin é usado sobretudo para marcar mentorias com mentores e para métricas, e o bot **continua respondendo** com o admin logado. A retenção (`ADMIN_HOLD_MS`, "Responder eu", "Enviar") foi removida.
+- **Desativar/ativar bot** (pop-up do ícone de usuário): desligado = a mensagem da pessoa só entra no histórico e o bot não processa nada (nem áudio), e o admin responde. Ligar de novo (ou **Sair**) chama `handBackToBot` (zera a dica; cadastrado volta a `COMPLETED`). Se o admin sumir por mais de 30 s com o bot desligado, ele religa sozinho quando a pessoa escrever. Marcador `chat-sim/bot-off.json` no R2.
+- **Certificado** (`src/sim/certificate.ts`, `schema: bmm.mentoria.certificado/1`): `certificate_id`, mentor e mentorado (nome, e-mail e turma do cadastro de quem registrou; do outro lado só o nome digitado na conversa, `source: informado_na_conversa`), data/hora, dúvida, **assunto interpretado pelo Grok** (`summarizeSubject`, até 8 palavras; sem IA vale o assunto informado), dados do áudio e `integrity.sha256` do documento (recalculável). Sem telefone.
+- **Data da mentoria**: o bot não pergunta quando a mentoria aconteceu; vale o momento do registro do áudio (`occurred_at_source: registro_do_audio`). Perguntar a data custaria mensagem (R2) e muda o fluxo: decisão pendente do humano.
+- **Quem é quem**: o papel vem de `audios.mentoria_role` (de quem registrou). A dúvida usada é a mais recente de quem registrou, anterior ao áudio. Se quem registrou foi o mentor, a dúvida do mentorado não é encontrada (ele só é citado pelo nome digitado); nesse caso o assunto vem do que o mentor informou.
+- **Guarda**: certificados com assunto da IA são gravados em `chat-sim/certificados/<id>.json` (não mudam depois). Painel: admin → "Mentorias (JSON)" (20 mais recentes).
+
+## 2026-11-10 — Dias e horários escolhidos em listas (mentor e mentorado)
+
+- **Fluxo** (`src/schedule/decide.ts`, decisão pura): lista de **dias** (segunda a domingo, um por toque) -> lista de **horários** do dia escolhido (um ou mais, das 8h às 20h) -> **Concluir** -> volta aos dias -> **Terminei**. Estados `SCHED_DAYS_<fluxo>` e `SCHED_HOURS_<fluxo>_<dia>` (o dia vem no nome do estado; as faixas escolhidas ficam em `users.availability_slots`, já existente, sem migração nova).
+- **Quem passa por ele**: mentor (depois das áreas, antes de encerrar o cadastro), "os dois" (horários e depois a pergunta de dúvida) e mentorado (logo depois da dúvida: "Dúvida registrada! Agora, só para encerrar: em quais dias..."). Mentor que só muda as áreas e já tem horários **não** é perguntado de novo; quem informou horários há menos de 2 h (ex.: "os dois" que acabou de dar os horários) também não.
+- **Linhas da lista**: 6 blocos de 2 h + "Manhã", "Tarde" e "Dia todo" + "Concluir <dia>" = 10 (o máximo da Meta). Horas já escolhidas somem; blocos vizinhos viram uma faixa só (8h-10h + 10h-12h = 8h-12h).
+- **Custo em mensagens (R2)**: cada toque = 1 resposta (a próxima lista). Um mentor com 3 dias e 1 bloco por dia gasta ~10 mensagens. O limite por pessoa por dia vale (padrão 12 no código, 40 no `wrangler.toml`); com o padrão, um cadastro completo pode chegar nele. Atalhos para economizar: "Dia todo", "Manhã" e "Tarde".
+- **Recomeço**: entrar no fluxo vindo de fora limpa as faixas antigas (`saveAvailability("", [])`), para horários velhos não se misturarem com os novos.
+- **Serviço "Horários" do menu** continua com texto livre lido pela IA (`AVAILABILITY_TEXT`), gravando no mesmo formato. Trocar por listas é uma decisão pendente do humano.
+- **Anexos durante o fluxo**: documento enviado enquanto escolhe dias/horários é ignorado em silêncio; o convite para anexar vem na mensagem final e vale a partir daí.
+
+## 2026-11-10 — Curiosidades por texto ou áudio
+
+- **Etapa "curiosidades"** (`REG_PROFILE_AUDIO`: data de nascimento, esporte, time, hobbies): além do áudio, agora aceita **texto**, para quem não quer falar. Texto válido = de 10 a 1000 caracteres, com letras e que não seja só um comando ("oi", "menu"). Texto inválido recebe **1 dica** e depois silêncio (R2); o áudio continua valendo como antes.
+- **Onde fica**: o texto vai para `users.profile_about` (migração `0014_perfil_texto.sql`, que também atualiza o CHECK de consentimento: R6 no banco, nenhuma curiosidade sem consentimento; o `MemoryRepo` tem a mesma regra). Nada vai para log. O áudio segue indo para o R2 / tabela `audios`.
+- **Sem custo extra**: a resposta ao texto é a mesma pergunta de papel que já vinha depois do áudio (1 mensagem). O texto não passa pela API externa de análise de áudio.
+- **Aplicar a migração**: rodar `0014_perfil_texto.sql` no Supabase antes do deploy; sem ela, gravar o texto falha (a conversa fica em silêncio, sem erro para a pessoa).
+
+## 2026-11-10 — Áudios gravados antes (qualquer formato comum)
+
+- **Problema**: só eram aceitos ogg, opus, mp3, m4a, aac e amr com esses nomes exatos de tipo; arquivos gravados em outros apps (WAV, M4A como `audio/x-m4a`, WebM...) ou sem tipo informado eram recusados, e áudio anexado como "Documento" no WhatsApp era ignorado.
+- **Agora** (`src/audio/storage.ts`): mais formatos (WAV, WebM, FLAC, 3GP, AIFF, WMA) e nomes alternativos de tipo (`audio/x-m4a`, `audio/mp3`, `audio/x-wav`...) viram um tipo canônico, que é o guardado e o enviado ao analisador. Sem tipo ou com `application/octet-stream`, vale a **extensão** do nome do arquivo. Tipos claramente não-áudio (PDF, imagem, vídeo) continuam recusados.
+- **Documento que é áudio**: o parser do webhook (`parser.ts`) transforma um "Documento" com tipo ou extensão de áudio em evento de áudio (`voice: false`); PDF e afins seguem como documento (material da dúvida).
+- **Chat de teste**: o botão de anexar áudio envia o nome do arquivo (`X-Filename`) e aceita as extensões acima; o botão de documento também trata áudio como áudio.
+- **Sem análise obrigatória**: o arquivo é só guardado (R2 + tabela `audios`); a análise continua sendo do serviço externo via API, e o analisador síncrono é opcional.
+- **Limite de tamanho**: continua `MAX_AUDIO_BYTES` (16 MB, o teto de mídia do WhatsApp). Gravações longas podem passar disso; aumentar o limite vale para o chat web, mas não para o WhatsApp real.

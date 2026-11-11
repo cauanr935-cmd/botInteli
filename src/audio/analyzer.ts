@@ -14,6 +14,16 @@ export interface AnalyzerResult {
 }
 export interface AudioAnalyzer {
   analyze(input: AnalyzerInput): Promise<AnalyzerResult>;
+  /** true = a análise acontece depois, em outro sistema (que busca o áudio pela API). */
+  readonly deferred?: boolean;
+}
+
+/** Sem analisador síncrono configurado: só guarda o áudio; o sistema externo busca e devolve o resultado pela API. */
+export class DeferredAudioAnalyzer implements AudioAnalyzer {
+  readonly deferred = true;
+  async analyze(): Promise<AnalyzerResult> {
+    return { text: "Áudio recebido e guardado. A análise fica disponível em breve. Para continuar, toque em Menu.", raw: null };
+  }
 }
 
 export class AnalyzerError extends Error {

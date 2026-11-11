@@ -13,6 +13,11 @@ export const MENU_FALLBACKS = {
   menuButtonLabel: "Menu",
 } as const;
 
+/** Respostas prontas de serviços (usadas se o banco não tiver `service_<id>` em canned_responses). */
+export const SERVICE_ANSWER_FALLBACKS: Record<string, string> = {
+  contato: "Fale com o Cauã, um dos fundadores da Be My Mentor, pelo WhatsApp: 88 99289-5332 (https://wa.me/5588992895332).",
+};
+
 /** Menu = UMA mensagem de lista com os serviços ativos (até 10, em ordem). `intro` substitui o corpo padrão. */
 export function menuReply(content: Content, intro?: string): Reply {
   return buildList(
@@ -31,7 +36,7 @@ export function findService(content: Content, rowId: string): Service | undefine
 
 /** Resposta pronta de um serviço sem áudio: 1 mensagem com o botão "Menu". */
 export function serviceAnswerReply(content: Content, s: Service): Reply {
-  const fallback = s.description ? `${s.title}: ${s.description}` : s.title;
+  const fallback = SERVICE_ANSWER_FALLBACKS[s.id] ?? (s.description ? `${s.title}: ${s.description}` : s.title);
   return buildButtons(content.text(`service_${s.id}`, fallback), [
     { id: MENU_BUTTON_ID, title: content.text("menuButtonLabel", MENU_FALLBACKS.menuButtonLabel, 20) },
   ]);

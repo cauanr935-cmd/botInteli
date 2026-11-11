@@ -14,10 +14,12 @@ bucket_name = "bot-whatsapp-audios"
 # ADMIN_TOKEN, VERIFY_TOKEN) entram via `wrangler secret put`, nunca aqui.
 [vars]
 GRAPH_API_VERSION = "v21.0"
+# Simulador de chat web (/chat?key=ADMIN_TOKEN). Use "false" para desligar.
+CHAT_SIM_ENABLED = "true"
 META_ACCOUNT_TIMEZONE = "America/Sao_Paulo"
 BUDGET_SAFETY_MARGIN = "50"
-MAX_BOT_MSGS_PER_USER_PER_DAY = "12"
-MAX_BOT_MSGS_PER_USER_PER_10MIN = "4"
-TERMS_VERSION = "2025-01"
+MAX_BOT_MSGS_PER_USER_PER_DAY = "40"
+MAX_BOT_MSGS_PER_USER_PER_10MIN = "15"
+TERMS_VERSION = "2026-11"
 MAX_AUDIO_BYTES = "16000000"
 ANALYZER_TIMEOUT_MS = "8000"

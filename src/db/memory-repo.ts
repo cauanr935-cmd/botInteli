@@ -2,7 +2,7 @@ import { MAX_STOP_AT } from "../config";
 import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
-  AudioRecord, BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  AudioRecord, BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaDraft, MentoriaRepo, MentoriaRow, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 export interface MemoryOutboundRow extends OutboundLogEntry {
@@ -12,7 +12,7 @@ export interface MemoryOutboundRow extends OutboundLogEntry {
   statusUpdatedAt?: Date;
 }
 
-export class MemoryRepo implements Repo {
+export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
   readonly processed = new Map<string, Date>();
   readonly users = new Map<string, Date>();
   readonly budgets = new Map<string, BudgetRow & { warned: boolean; tripLogged: boolean }>();
@@ -85,9 +85,11 @@ export class MemoryRepo implements Repo {
   readonly registrations = new Map<string, RegistrationRecord & { waIdHash?: string }>();
   async getRegistration(waId: string): Promise<RegistrationRecord> {
     const r = this.registrations.get(waId);
-    return r
+    const a = this.availabilities.get(waId);
+    const base: RegistrationRecord = r
       ? { ...r, values: { ...r.values } }
       : { consentAt: null, termsVersion: null, registeredAt: null, values: {} };
+    return a ? { ...base, ...(a.slots ? { availabilitySlots: [...a.slots] } : {}), availabilityAt: a.at } : base;
   }
   async saveRegistration(waId: string, patch: RegistrationPatch): Promise<void> {
     if (!this.users.has(waId)) throw new Error("usuario inexistente");
@@ -100,10 +102,31 @@ export class MemoryRepo implements Repo {
       consentAt: patch.consentAt ?? cur.consentAt,
       termsVersion: patch.termsVersion ?? cur.termsVersion,
       registeredAt: patch.registeredAt ?? cur.registeredAt,
+      ...((patch.profileRole ?? cur.profileRole) ? { profileRole: (patch.profileRole ?? cur.profileRole)! } : {}),
+      ...((patch.mentorCategories ?? cur.mentorCategories) ? { mentorCategories: (patch.mentorCategories ?? cur.mentorCategories)! } : {}),
+      ...((patch.profileAbout ?? cur.profileAbout) ? { profileAbout: (patch.profileAbout ?? cur.profileAbout)! } : {}),
     };
     // Mesma regra do CHECK do banco (R6): sem consentimento, nenhum dado de cadastro.
-    if (!next.consentAt && (Object.keys(values).length > 0 || next.registeredAt)) throw new Error("sem consentimento");
+    if (!next.consentAt && (Object.keys(values).length > 0 || next.registeredAt || patch.profileRole || patch.mentorCategories || patch.profileAbout)) throw new Error("sem consentimento");
     this.registrations.set(waId, next);
+  }
+  readonly availabilities = new Map<string, { text: string; at: Date; slots?: readonly { day: string; start: string; end: string }[] }>();
+  async saveAvailability(waId: string, text: string, at: Date, slots?: readonly { day: string; start: string; end: string }[]): Promise<void> {
+    if (!this.registrations.has(waId) && !this.conversations.has(waId)) throw new Error("usuario inexistente");
+    this.availabilities.set(waId, { text, at, ...(slots ? { slots } : {}) });
+  }
+  readonly materials: { id: string; waIdHash: string; r2Key: string; mime: string; bytes: number; filename?: string; at: Date }[] = [];
+  async insertMaterial(_waId: string, m: { id: string; waIdHash: string; r2Key: string; mime: string; bytes: number; filename?: string; at: Date }): Promise<void> {
+    const ok = [...this.registrations.values()].some((r) => r.waIdHash === m.waIdHash && r.consentAt !== null);
+    if (!ok) throw new Error("sem consentimento");
+    this.materials.push({ ...m });
+  }
+  readonly doubts: { waIdHash: string; text: string; categories: string[]; at: Date }[] = [];
+  async insertDoubt(_waId: string, d: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void> {
+    // Mesma regra do banco (R6): sem consentimento, nada é guardado.
+    const ok = [...this.registrations.values()].some((r) => r.waIdHash === d.waIdHash && r.consentAt !== null);
+    if (!ok) throw new Error("sem consentimento");
+    this.doubts.push({ ...d });
   }
   // ---- Etapa 5: conteúdo ----
   /** Serviços ATIVOS (testes preenchem). */
@@ -209,5 +232,53 @@ export class MemoryRepo implements Repo {
     row.pricingCategory = pricing.category;
     row.statusUpdatedAt = at;
     return true;
+  }
+
+  // ---- Mentorias ----
+  readonly drafts = new Map<string, MentoriaDraft>();
+  readonly analysis = new Map<string, { result: unknown; at: Date }>();
+  async getMentoriaDraft(waId: string): Promise<MentoriaDraft> {
+    return { ...(this.drafts.get(waId) ?? {}) };
+  }
+  async saveMentoriaDraft(waId: string, patch: Partial<MentoriaDraft> | null): Promise<void> {
+    if (!this.registrations.has(waId) && !this.conversations.has(waId)) throw new Error("usuario inexistente");
+    if (patch === null) { this.drafts.delete(waId); return; }
+    this.drafts.set(waId, { ...(this.drafts.get(waId) ?? {}), ...patch });
+  }
+  private toMentoria(a: AudioRecord): MentoriaRow {
+    const an = this.analysis.get(a.id);
+    return {
+      id: a.id, waIdHash: a.waIdHash, role: a.mentoria?.role ?? null, subject: a.mentoria?.subject ?? null,
+      partner: a.mentoria?.partner ?? null, mime: a.mime, bytes: a.bytes, r2Key: a.r2Key, createdAt: a.createdAt,
+      analysisResult: an?.result ?? null, analysisAt: an?.at ?? null,
+    };
+  }
+  async listMentorias(o: { pending?: boolean; limit: number; before?: Date }): Promise<MentoriaRow[]> {
+    return [...this.audios.values()].filter((a) => a.mentoria)
+      .map((a) => this.toMentoria(a))
+      .filter((m) => (!o.pending || m.analysisResult === null) && (!o.before || m.createdAt < o.before))
+      .sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime()).slice(0, o.limit);
+  }
+  async getMentoria(id: string): Promise<MentoriaRow | null> {
+    const a = this.audios.get(id);
+    return a?.mentoria ? this.toMentoria(a) : null;
+  }
+  async setAnalysisResult(id: string, result: unknown, at: Date): Promise<boolean> {
+    if (!this.audios.get(id)?.mentoria) return false;
+    this.analysis.set(id, { result, at });
+    return true;
+  }
+  readonly loginLocks = new Map<string, { failures: number; lockedUntil: Date | null }>();
+  async getLoginLock(key: string): Promise<{ failures: number; lockedUntil: Date | null }> {
+    return { ...(this.loginLocks.get(key) ?? { failures: 0, lockedUntil: null }) };
+  }
+  async recordLoginFailure(key: string, now: Date, maxFailures: number, lockMs: number): Promise<void> {
+    const cur = await this.getLoginLock(key);
+    const expired = cur.lockedUntil !== null && cur.lockedUntil <= now;
+    const failures = (expired ? 0 : cur.failures) + 1;
+    this.loginLocks.set(key, { failures, lockedUntil: failures >= maxFailures ? new Date(now.getTime() + lockMs) : null });
+  }
+  async clearLoginFailures(key: string): Promise<void> {
+    this.loginLocks.delete(key);
   }
 }

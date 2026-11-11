@@ -6,7 +6,7 @@ describe("etapa 8 adversarial", () => {
   it("concorrência: 400 pessoas em paralelo com margem 10 nunca passam de 990", async () => {
     const s = new Simulator({ env: { BUDGET_SAFETY_MARGIN: "10" } });
     for (let r = 0; r < 3; r++) {
-      await Promise.all(Array.from({ length: 400 }, (_, i) => (r === 0 ? s.text(s.phone(i), "oi") : r === 1 ? s.form(s.phone(i)) : s.chooseAudio(s.phone(i)))));
+      await Promise.all(Array.from({ length: 400 }, (_, i) => (r === 0 ? s.text(s.phone(i), "oi") : r === 1 ? s.button(s.phone(i), "consent_yes") : s.chooseAudio(s.phone(i)))));
     }
     expect(s.cfg.stopAt).toBe(990);
     expect(s.sentCount).toBeLessThanOrEqual(990);

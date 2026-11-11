@@ -1,7 +1,9 @@
 import { handleAdmin, type AdminDeps } from "./admin/budget";
 import { loadConfig } from "./config";
 import { createMediaClient } from "./whatsapp/client";
-import { HttpAudioAnalyzer } from "./audio/analyzer";
+import { createAgent } from "./ai/grok";
+import { legalResponse } from "./legal/page";
+import { DeferredAudioAnalyzer, HttpAudioAnalyzer } from "./audio/analyzer";
 import { R2AudioStore } from "./audio/storage";
 import { SupabaseRepo } from "./db/supabase-repo";
 import type { Repo } from "./db/repo";
@@ -9,6 +11,10 @@ import { ContentProvider } from "./services/provider";
 import { createEventHandler } from "./webhook/events";
 import { runScheduled } from "./ops/scheduled";
 import { createLogger, type Logger } from "./lib/logger";
+import { handleApi } from "./mentoria/api";
+import { handlePanel } from "./mentoria/panel";
+import { handleChat } from "./sim/chat";
+import { PAGE_HTML } from "./sim/page";
 import { handleVerification, handleWebhookPost, type EventHandler, type WaitUntilCtx } from "./webhook/handler";
 
 export type Env = Record<string, unknown> & { AUDIOS?: R2Bucket };
@@ -62,15 +68,20 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
       logger,
       onEvent: createEventHandler(cfg, {
         repo, logger, content,
+        ...((a) => (a ? { agent: a } : {}))(createAgent(cfg, logger)),
+        // Áudio sempre é guardado (R2). Com analisador síncrono configurado, ele responde na hora; sem ele,
+        // a análise é feita pelo sistema externo, que busca o áudio pela API (/api/v1).
         ...(env.AUDIOS
           ? {
               audio: {
                 media: createMediaClient({ whatsappToken: cfg.whatsappToken, graphApiVersion: cfg.graphApiVersion }),
                 store: new R2AudioStore(env.AUDIOS),
-                analyzer: new HttpAudioAnalyzer({ url: cfg.analyzerApiUrl, apiKey: cfg.analyzerApiKey, timeoutMs: cfg.analyzerTimeoutMs }),
+                analyzer: cfg.analyzerApiUrl && cfg.analyzerApiKey
+                  ? new HttpAudioAnalyzer({ url: cfg.analyzerApiUrl, apiKey: cfg.analyzerApiKey, timeoutMs: cfg.analyzerTimeoutMs })
+                  : new DeferredAudioAnalyzer(),
               },
             }
-          : (logger.log("error", "r2_binding_missing"), {})),
+          : (logger.log("warn", "r2_binding_missing"), {})),
       }),
       admin: {
         adminToken: cfg.adminToken, repo, logger, phoneNumberId: cfg.phoneNumberId,
@@ -87,6 +98,24 @@ export default {
   async fetch(request: Request, env: Env = {}, ctx?: ExecutionContext): Promise<Response> {
     const logger = createLogger();
     const pathname = new URL(request.url).pathname;
+    // Painel de metadados (login) e API de integração do analisador. Independentes das credenciais da Meta.
+    if (pathname === "/painel" || pathname.startsWith("/painel/") || pathname.startsWith("/api/v1/")) {
+      const url = typeof env.SUPABASE_URL === "string" ? env.SUPABASE_URL.trim() : "";
+      const key = typeof env.SUPABASE_SERVICE_KEY === "string" ? env.SUPABASE_SERVICE_KEY.trim() : "";
+      if (!url || !key) return new Response("server misconfigured", { status: 500 });
+      const repo = new SupabaseRepo(url, key);
+      if (pathname.startsWith("/api/v1/")) {
+        const apiKey = typeof env.INTEGRATION_API_KEY === "string" ? env.INTEGRATION_API_KEY.trim() : "";
+        return handleApi(request, { apiKey, repo, bucket: env.AUDIOS });
+      }
+      return handlePanel(request, { env, repo, bucket: env.AUDIOS });
+    }
+    // Termos de Uso e Política de Privacidade (LGPD): página pública, o link citado no consentimento.
+    if (request.method === "GET" && (pathname === "/privacidade" || pathname === "/termos")) return legalResponse();
+    // Simulador de chat web (canal alternativo enquanto a API da Meta não é liberada). Desligado por padrão.
+    if (pathname === "/chat" || pathname.startsWith("/chat/")) {
+      return handleChat(request, { env, logger, pageHtml: PAGE_HTML });
+    }
     const deps = pathname === "/webhook" || pathname.startsWith("/admin/") ? buildDeps(env, logger) : null;
     const safeCtx: WaitUntilCtx = ctx ?? { waitUntil: () => undefined };
     return route(request, safeCtx, deps);

@@ -34,6 +34,12 @@ export interface AudioEvent extends MessageBase {
   /** true quando é nota de voz. */
   voice: boolean;
 }
+export interface DocumentEvent extends MessageBase {
+  type: "document";
+  mediaId: string;
+  mimeType?: string;
+  filename?: string;
+}
 export interface UnsupportedEvent extends MessageBase {
   type: "unsupported";
   /** Tipo original informado pela Meta (sticker, reaction, image...). */
@@ -63,6 +69,7 @@ export type IncomingMessage =
   | ListReplyEvent
   | NfmReplyEvent
   | AudioEvent
+  | DocumentEvent
   | UnsupportedEvent;
 
 export type WebhookEvent = IncomingMessage | StatusEvent;

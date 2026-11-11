@@ -1,7 +1,7 @@
 import type { Service } from "../services/content";
 
 /** Acesso a dados. Implementações: memória (testes) e Supabase (produção). */
-export interface Repo extends BudgetRepo {
+export interface Repo extends BudgetRepo, MentoriaRepo {
   /**
    * Registra a chave de idempotência (wamid) ANTES de processar.
    * Devolve true se foi inserida agora; false se já existia. Deve ser atômico.
@@ -39,6 +39,56 @@ export interface Repo extends BudgetRepo {
   deleteProcessedBefore(before: Date): Promise<number>;
   /** Etapa 7: conversas em PROCESSING_AUDIO desde antes de `before` voltam a AWAIT_AUDIO, sem enviar nada. */
   releaseStuckProcessing(before: Date): Promise<number>;
+  /** Dúvida do mentorado (texto + áreas da triagem). Exige consentimento (R6). */
+  /** Dias e horários livres informados pela pessoa (texto livre). Lança se a pessoa não existir. */
+  saveAvailability(waId: string, text: string, at: Date, slots?: readonly { day: string; start: string; end: string }[]): Promise<void>;
+  /** Material (documento) anexado junto da dúvida. Sem consentimento, lança (R6). */
+  insertMaterial(waId: string, m: { id: string; waIdHash: string; r2Key: string; mime: string; bytes: number; filename?: string; at: Date }): Promise<void>;
+  insertDoubt(waId: string, doubt: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void>;
+  /** Mentoria: rascunho em andamento (papel, assunto, com quem). */
+  getMentoriaDraft(waId: string): Promise<MentoriaDraft>;
+  /** Mescla campos no rascunho; `null` apaga o rascunho inteiro. Lança se a pessoa não existir. */
+  saveMentoriaDraft(waId: string, patch: Partial<MentoriaDraft> | null): Promise<void>;
+}
+
+export type MentoriaRole = "mentor" | "mentorado";
+export interface MentoriaDraft {
+  role?: MentoriaRole;
+  subject?: string;
+  partner?: string;
+}
+
+/** Mentoria guardada (um áudio + metadados informados na conversa). */
+export interface MentoriaRow {
+  id: string;
+  waIdHash: string;
+  role: MentoriaRole | null;
+  subject: string | null;
+  partner: string | null;
+  mime: string;
+  bytes: number;
+  r2Key: string;
+  createdAt: Date;
+  /** Resultado do analisador externo; null = análise pendente. */
+  analysisResult: unknown;
+  analysisAt: Date | null;
+  /** Dados de quem registrou (cadastro), quando existirem. */
+  registrant?: { name: string | null; phoneMasked: string | null };
+}
+
+/** Leitura e atualização das mentorias (painel e API de integração). */
+export interface MentoriaRepo {
+  listMentorias(o: { pending?: boolean; limit: number; before?: Date }): Promise<MentoriaRow[]>;
+  getMentoria(id: string): Promise<MentoriaRow | null>;
+  /** Grava o resultado da análise. false se a mentoria não existe. */
+  setAnalysisResult(id: string, result: unknown, at: Date): Promise<boolean>;
+}
+
+/** Bloqueio de tentativas de login do painel. */
+export interface LoginAttemptRepo {
+  getLoginLock(key: string): Promise<{ failures: number; lockedUntil: Date | null }>;
+  recordLoginFailure(key: string, now: Date, maxFailures: number, lockMs: number): Promise<void>;
+  clearLoginFailures(key: string): Promise<void>;
 }
 
 export interface AudioRecord {
@@ -48,6 +98,8 @@ export interface AudioRecord {
   mime: string;
   bytes: number;
   serviceId: string | null;
+  /** Metadados da mentoria (quando o áudio veio do fluxo de mentoria). */
+  mentoria?: { role?: MentoriaRole; subject: string; partner?: string };
   status: "processing" | "done" | "failed";
   result: unknown;
   createdAt: Date;
@@ -60,6 +112,13 @@ export interface RegistrationRecord {
   registeredAt: Date | null;
   /** Campos já gravados (chave = coluna). */
   values: Record<string, string>;
+  profileRole?: "mentor" | "mentorado" | "ambos";
+  mentorCategories?: string[];
+  /** Curiosidades escritas (alternativa ao áudio de perfil). */
+  profileAbout?: string;
+  /** Faixas de horário livres já gravadas (vazio/ausente = nenhuma). */
+  availabilitySlots?: { day: string; start: string; end: string }[];
+  availabilityAt?: Date | null;
 }
 export interface RegistrationPatch {
   waIdHash?: string;
@@ -68,6 +127,12 @@ export interface RegistrationPatch {
   registeredAt?: Date;
   /** Chaves de FIELDS (outras são ignoradas). */
   values?: Record<string, string>;
+  /** Papel escolhido no cadastro. */
+  profileRole?: "mentor" | "mentorado" | "ambos";
+  /** Áreas em que o mentor topa ajudar (chaves de CATEGORIES). */
+  mentorCategories?: string[];
+  /** Curiosidades escritas pela pessoa (até 1000 caracteres). */
+  profileAbout?: string;
 }
 
 export interface ConversationFields {

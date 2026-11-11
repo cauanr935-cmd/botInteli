@@ -113,7 +113,7 @@ describe("C5.2 construtores validam limites da Meta", () => {
 describe("C5.3 escolha na lista", () => {
   const services = [
     svc(1, { id: "audio", requiresAudio: true }),
-    svc(2, { id: "horarios" }),
+    svc(2, { id: "faq" }),
   ];
   it("C5.3 serviço com áudio: 1 mensagem de instrução e vai a AWAIT_AUDIO", async () => {
     const s = setup({ services });
@@ -125,9 +125,9 @@ describe("C5.3 escolha na lista", () => {
   });
   it("C5.3 serviço sem áudio: 1 mensagem com botão Menu (texto do banco) e continua em MENU", async () => {
     const s = setup({ services });
-    s.repo.canned.set("service_horarios", "Atendemos 9h às 18h.");
+    s.repo.canned.set("service_faq", "Atendemos 9h às 18h.");
     await s.toMenu();
-    await s.feed(list("svc_horarios"));
+    await s.feed(list("svc_faq"));
     expect(s.graph).toHaveBeenCalledTimes(1);
     const m = s.sent()[0];
     expect(m.interactive.body.text).toBe("Atendemos 9h às 18h.");
@@ -151,9 +151,9 @@ describe("C5.3 escolha na lista", () => {
     expect((await t.repo.getConversation(WA)).state).toBe("MENU");
   });
   it("C5.3 escolha repetida de serviço SEM áudio => silêncio; outro serviço ou menu reaberto volta a responder", async () => {
-    const s = setup();
+    const s = setup({ services: [svc(1, { id: "faq" }), svc(2, { id: "contato" })] });
     await s.toMenu();
-    for (let i = 0; i < 4; i++) await s.feed(list("svc_horarios"));
+    for (let i = 0; i < 4; i++) await s.feed(list("svc_faq"));
     expect(s.graph).toHaveBeenCalledTimes(1); // só a primeira
     await s.feed(list("svc_contato")); // outro serviço: responde
     expect(s.graph).toHaveBeenCalledTimes(2);
@@ -168,7 +168,7 @@ describe("C5.3 escolha na lista", () => {
   it("C5.3 wamid repetido da mesma escolha é ignorado (idempotência)", async () => {
     const s = setup({ services });
     await s.toMenu();
-    const ev = list("svc_horarios");
+    const ev = list("svc_faq");
     await s.feed(ev);
     await s.feed(ev);
     expect(s.graph).toHaveBeenCalledTimes(1);
@@ -295,7 +295,7 @@ describe("C5 banco: migração 0005 e SupabaseRepo", () => {
     db = new PGlite();
     for (const f of readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) await db.exec(readFileSync(join(dir, f), "utf8"));
   }, 60_000);
-  it("C5.5 seeds: 3 serviços ativos, com e sem áudio; RLS ligado", async () => {
+  it("C5.5 seeds: 3 serviços ativos (mentoria, horários e contato; Análise de áudio desativada na 0011); RLS ligado", async () => {
     const r = await db.query<{ requires_audio: boolean }>("select requires_audio from services where active order by sort_order");
     expect(r.rows).toHaveLength(3);
     expect(r.rows.some((x) => x.requires_audio)).toBe(true);
@@ -311,7 +311,7 @@ describe("C5 banco: migração 0005 e SupabaseRepo", () => {
   it("C5 reaplicar a migração 0005 é inofensivo (seeds idempotentes)", async () => {
     await db.exec(readFileSync(join(dir, "0005_services.sql"), "utf8"));
     const r = await db.query<{ n: number }>("select count(*)::int as n from services");
-    expect(r.rows[0]!.n).toBe(3);
+    expect(r.rows[0]!.n).toBe(4);
   });
   it("C5 SupabaseRepo lê serviços ativos e respostas prontas pela REST (mock)", async () => {
     const calls: string[] = [];

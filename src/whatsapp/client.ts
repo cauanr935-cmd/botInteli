@@ -96,9 +96,17 @@ export async function sendGuarded(message: OutboundMessage, ctx: SendContext): P
         wamid = body?.messages?.[0]?.id ?? null;
       } else {
         errorCode = `http_${res.status}`;
+        // Diagnóstico: o erro da Meta (código/mensagem), nunca o conteúdo da mensagem nem o telefone.
+        const err = (await res.json().catch(() => null)) as
+          { error?: { message?: string; type?: string; code?: number; error_subcode?: number; error_data?: { details?: string } } } | null;
+        ctx.logger.log("warn", "whatsapp_send_failed", {
+          status: res.status, messageType: message.type, metaCode: err?.error?.code ?? null, metaSubcode: err?.error?.error_subcode ?? null,
+          metaType: err?.error?.type ?? null, metaMessage: (err?.error?.error_data?.details ?? err?.error?.message ?? "").replace(/\d{6,}/g, "***").slice(0, 200), // sem telefones (R3)
+        });
       }
-    } catch {
+    } catch (e) {
       errorCode = "network_error";
+      ctx.logger.log("warn", "whatsapp_send_exception", { messageType: message.type, error: e instanceof Error ? e.name : "unknown" });
     }
 
     // 6. outbound_log (falha aqui não muda o resultado do envio)

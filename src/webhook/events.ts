@@ -10,7 +10,9 @@ import { processAudio } from "../audio/pipeline";
 import type { AudioStore } from "../audio/storage";
 import type { ContentProvider } from "../services/provider";
 import { sendGuarded, type MediaClient, type OutboundMessage } from "../whatsapp/client";
-import type { AudioEvent } from "../whatsapp/types";
+import type { IntentAgent } from "../ai/agent";
+import type { AudioEvent, DocumentEvent } from "../whatsapp/types";
+import { processMaterial } from "../materials/pipeline";
 import type { EventHandler } from "./handler";
 
 export interface EventHandlerPorts {
@@ -21,6 +23,10 @@ export interface EventHandlerPorts {
   audio?: { media: MediaClient; store: AudioStore; analyzer: AudioAnalyzer };
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  /** IA (Grok) opcional que intervém quando o bot não entende. */
+  agent?: IntentAgent;
+  /** Contexto recente da conversa para a IA (só canais que guardam o histórico; o webhook da Meta não tem). */
+  recentContext?: readonly string[];
 }
 
 export function createEventHandler(cfg: Config, p: EventHandlerPorts): EventHandler {
@@ -39,17 +45,26 @@ export function createEventHandler(cfg: Config, p: EventHandlerPorts): EventHand
     const a = p.audio;
     const audio = a
       ? {
-          process: (m: AudioEvent, hintAlreadySent: boolean) =>
+          process: (m: AudioEvent, hintAlreadySent: boolean, purpose?: "mentoria" | "profile") =>
             processAudio(m, hintAlreadySent, {
               repo, logger, send, content, media: a.media, store: a.store, analyzer: a.analyzer,
               maxAudioBytes: cfg.maxAudioBytes, maxPerDay: cfg.maxBotMsgsPerUserPerDay,
               maxPer10Min: cfg.maxBotMsgsPerUserPer10Min, timezone: cfg.metaAccountTimezone,
               ...(p.now ? { now: p.now } : {}),
+            }, purpose),
+        }
+      : undefined;
+    const material = a
+      ? {
+          process: (m: DocumentEvent) =>
+            processMaterial(m, {
+              repo, logger, media: a.media, store: a.store, maxBytes: cfg.maxAudioBytes, timezone: cfg.metaAccountTimezone,
+              ...(p.now ? { now: p.now } : {}),
             }),
         }
       : undefined;
     await handleIncomingMessage(ev, {
-      ...(audio ? { audio } : {}), send, repo, logger, content,
+      ...(audio ? { audio } : {}), ...(material ? { material } : {}), ...(p.agent ? { agent: p.agent } : {}), ...(p.recentContext?.length ? { recentContext: p.recentContext } : {}), send, repo, logger, content,
       maxPerDay: cfg.maxBotMsgsPerUserPerDay,
       maxPer10Min: cfg.maxBotMsgsPerUserPer10Min,
       ...(p.now ? { now: p.now } : {}),

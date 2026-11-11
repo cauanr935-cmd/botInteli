@@ -16,7 +16,7 @@ describe("config", () => {
     expect(c.metaAccountTimezone).toBe("America/Sao_Paulo");
   });
 
-  for (const key of Object.keys(base)) {
+  for (const key of Object.keys(base).filter((key) => key !== "ANALYZER_API_URL" && key !== "ANALYZER_API_KEY")) {
     it(`C0.3 variável obrigatória ausente: ${key}`, () => {
       const env: Record<string, string> = { ...base };
       delete env[key];
@@ -24,6 +24,14 @@ describe("config", () => {
       expect(() => loadConfig(env)).toThrow(key);
     });
   }
+
+  it("aceita o analisador ausente, mas exige URL e chave juntas", () => {
+    const withoutAnalyzer: Record<string, string> = { ...base };
+    delete withoutAnalyzer.ANALYZER_API_URL;
+    delete withoutAnalyzer.ANALYZER_API_KEY;
+    expect(loadConfig(withoutAnalyzer).analyzerApiUrl).toBeUndefined();
+    expect(() => loadConfig({ ...base, ANALYZER_API_URL: "" })).toThrow(/ANALYZER_API_URL/);
+  });
 
   it("C0.3 BUDGET_SAFETY_MARGIN < 10 é recusada", () => {
     expect(() => loadConfig({ ...base, BUDGET_SAFETY_MARGIN: "9" })).toThrow(/BUDGET_SAFETY_MARGIN/);

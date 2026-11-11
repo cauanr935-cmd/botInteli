@@ -1,3 +1,4 @@
+import { resolveAudioMime } from "../audio/storage";
 import type { IncomingMessage, StatusEvent, WebhookEvent } from "./types";
 
 type Obj = Record<string, unknown>;
@@ -35,6 +36,17 @@ function parseMessage(m: Obj): IncomingMessage | null {
       if (!mediaId) return unsupported;
       const mime = str(m.audio.mime_type);
       return { ...base, type: "audio", mediaId, ...(mime ? { mimeType: mime } : {}), voice: m.audio.voice === true };
+    }
+    case "document": {
+      if (!isObj(m.document)) return unsupported;
+      const mediaId = str(m.document.id);
+      if (!mediaId) return unsupported;
+      const mime = str(m.document.mime_type);
+      const filename = str(m.document.filename);
+      // Arquivo de áudio gravado antes e anexado como "Documento": vale como áudio (só é guardado; a análise é externa).
+      const audioMime = resolveAudioMime(mime, filename);
+      if (audioMime) return { ...base, type: "audio", mediaId, mimeType: audioMime, voice: false };
+      return { ...base, type: "document", mediaId, ...(mime ? { mimeType: mime } : {}), ...(filename ? { filename } : {}) };
     }
     case "interactive": {
       if (!isObj(m.interactive)) return unsupported;

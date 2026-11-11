@@ -13,10 +13,22 @@ export type State =
   | "NEW"
   | "AWAIT_REGISTRATION"
   | "REG_CONSENT"
+  | "REG_NAME_CONFIRM"
+  | "REG_PROFILE_AUDIO"
   | `REG_FIELD_${string}`
   | "MENU"
+  | "AVAILABILITY_TEXT"
+  | `SCHED_DAYS_${string}`
+  | `SCHED_HOURS_${string}`
   | "AWAIT_AUDIO"
   | "PROCESSING_AUDIO"
+  | "PROFILE_ROLE"
+  | "MENTOR_CATEGORIES"
+  | "MENTOR_CATEGORIES_BOTH"
+  | "RETURNING_CHOICE"
+  | "DOUBT_ASK"
+  | "DOUBT_TEXT"
+  | "COMPLETED"
   | "OPTED_OUT";
 
 export interface UserState {
@@ -100,6 +112,9 @@ export const STATES: Record<string, StateDef> = {
     hint: REPLIES.hintAudio,
   },
   PROCESSING_AUDIO: { transitions: [] },
+  COMPLETED: {
+    transitions: [{ on: { kind: "text", intent: "menu" }, to: "MENU", reply: REPLIES.menu }],
+  },
   OPTED_OUT: { transitions: [] }, // tratado à parte: só "voltar"
 };
 
@@ -110,6 +125,7 @@ function promptFor(state: State): ReplyFn | undefined {
     case "AWAIT_REGISTRATION": return REPLIES.welcome;
     case "MENU": return REPLIES.menu;
     case "AWAIT_AUDIO": return REPLIES.audioInstruction;
+    case "AVAILABILITY_TEXT": return REPLIES.askAvailability;
     default: return STATES[state]?.hint;
   }
 }
@@ -179,15 +195,23 @@ export function decide(
   const def = STATES[user.state];
   if (!def) return silent();
 
-  // Sessão antiga (sem mensagem do bot há horas): "oi" reabre o menu em 1 mensagem.
+  // Quem já está cadastrado e manda "oi" (sessão antiga OU a pessoa quer registrar outra mentoria) recebe o menu
+  // em 1 mensagem. Depois disso, novos "oi" no mesmo estado ficam em silêncio (R2): hintSentInState marca "já respondi".
   if (
     (user.state === "MENU" || user.state === "AWAIT_AUDIO") &&
-    input.type === "text" && intents.has("greeting") &&
-    counters.lastBotMsgAt !== undefined &&
-    (counters.lastBotMsgAt === null || now.getTime() - counters.lastBotMsgAt.getTime() > SESSION_IDLE_MS)
+    input.type === "text" && intents.has("greeting")
   ) {
-    const intro = content.text("welcomeBack", "Que bom ver você de novo! Escolha um serviço na lista.");
-    return finish(user, clearService(moveTo(user, "MENU", now)), [menuReply(content, intro)], counters, "reply");
+    const idle =
+      counters.lastBotMsgAt !== undefined &&
+      (counters.lastBotMsgAt === null || now.getTime() - counters.lastBotMsgAt.getTime() > SESSION_IDLE_MS);
+    // Em MENU o menu já está na tela: só reenvia se a sessão for antiga. Em AWAIT_AUDIO (onde a pessoa fica depois de
+    // registrar uma mentoria) o "oi" reabre o menu uma vez, para ela poder registrar outra.
+    if (idle || (user.state === "AWAIT_AUDIO" && !user.hintSentInState)) {
+      const intro = content.text("welcomeBack", "Que bom ver você de novo! Escolha um serviço na lista.");
+      const next = { ...clearService(moveTo(user, "MENU", now)), hintSentInState: true };
+      return finish(user, next, [menuReply(content, intro)], counters, "reply");
+    }
+    return silent();
   }
 
   // Escolha na lista do menu: serviço com áudio -> instrução (AWAIT_AUDIO); sem áudio -> resposta pronta.

@@ -10,27 +10,28 @@ Com o cadastro por formulário (WhatsApp Flow), uma pessoa nova gasta no máximo
 
 | Momento | Mensagens do bot |
 | --- | --- |
-| Boas-vindas (o próprio formulário de cadastro, com o aceite LGPD dentro) | 1 |
-| Confirmação do cadastro + menu de serviços (numa mensagem só) | 1 |
-| Instrução depois de escolher um serviço com áudio | 1 |
-| Resultado do áudio (com botão "Menu") | 1 |
-| **Total: pessoa nova, cadastro + 1 áudio** | **4** |
+| Boas-vindas (o formulário, com nome completo e aceite LGPD) | 1 |
+| Pedido de áudio de apresentação | 1 |
+| Confirmação do cadastro (sem menu de serviços) | 1 |
+| Menu, instrução e resultado de um serviço com áudio (após pedido explícito) | 3 |
+| **Total: cadastro + 1 serviço com áudio** | **6** |
 | Cada áudio extra na mesma sessão | 1 |
-| Pessoa já cadastrada voltando ("oi" → menu → instrução → resultado) | 3 |
+| Pessoa já cadastrada voltando ("oi" → confirmação; "menu" explícito → serviço) | 4 |
 
-Com 950 mensagens por mês (corte padrão), isso dá cerca de **237 pessoas novas com 1 áudio por mês**.
+Com 950 mensagens por mês (corte padrão), isso dá cerca de **158 pessoas novas com 1 serviço de áudio por mês**.
 
 ## Estados da conversa (referência para as etapas 3 a 6)
 
 ```
-NEW ──(qualquer saudação)──► AWAIT_REGISTRATION ──(formulário válido)──► MENU
+NEW ──(qualquer saudação)──► AWAIT_REGISTRATION ──(formulário válido)──► REG_PROFILE_AUDIO ──(áudio)──► COMPLETED
+COMPLETED ──("menu" explícito)──► MENU
 MENU ──(serviço sem áudio)──► resposta pronta ──► MENU
 MENU ──(serviço com áudio)──► AWAIT_AUDIO ──(áudio válido)──► PROCESSING_AUDIO ──(resultado)──► AWAIT_AUDIO
 AWAIT_AUDIO ──("menu" ou botão Menu)──► MENU
 qualquer estado ──("sair"/"parar")──► OPTED_OUT ──("voltar")──► estado anterior
 ```
 
-Sem Flow configurado (`WHATSAPP_FLOW_ID` vazio), `AWAIT_REGISTRATION` vira uma sequência de estados `REG_CONSENT` → `REG_FIELD_<campo>` (uma pergunta por campo).
+Sem Flow configurado (`WHATSAPP_FLOW_ID` vazio), `AWAIT_REGISTRATION` vira a sequência `REG_CONSENT` → `REG_FIELD_full_name` → `REG_PROFILE_AUDIO`.
 
 ---
 
@@ -165,22 +166,22 @@ Sem Flow configurado (`WHATSAPP_FLOW_ID` vazio), `AWAIT_REGISTRATION` vira uma s
 **Objetivo:** cadastrar a pessoa gastando o mínimo de mensagens e sem guardar nada antes do aceite.
 
 **Tarefas**
-- Campos do cadastro definidos num único arquivo (`src/registration/fields.ts`). Padrão inicial: **nome completo**, **e-mail**, **cidade**. Registrar em DECISOES que os campos são provisórios e fáceis de trocar.
-- `flows/cadastro.json`: WhatsApp Flow **sem endpoint** (só navegação), com os campos acima e um componente de aceite obrigatório (OptIn) com o link `PRIVACY_POLICY_URL`. Registrar em DECISOES a versão do Flow JSON usada.
-- Com `WHATSAPP_FLOW_ID` configurado: a mensagem de boas-vindas **é** o Flow (1 mensagem). Ao receber `nfm_reply`: valida, salva e responde **numa só mensagem** a confirmação + menu de serviços (lista).
-- Sem `WHATSAPP_FLOW_ID` (fallback): boas-vindas com botão "Aceito" + link do termo; depois uma pergunta por campo; a última resposta válida gera confirmação + menu numa só mensagem.
-- Validação: nome (2–100 caracteres), e-mail (formato), cidade (2–80). Valor inválido → regra da dica única do estado.
+- Cadastro coleta **nome completo** (2–100 caracteres) e aceite obrigatório (OptIn); perguntas de esporte, time, hobby, comida, cidade/estado natal, carreira e curso são respondidas em áudio.
+- `flows/cadastro.json`: WhatsApp Flow **sem endpoint** (só navegação), com nome completo e componente de aceite obrigatório, com link de privacidade.
+- Com `WHATSAPP_FLOW_ID` configurado: a mensagem de boas-vindas **é** o Flow; após validar e salvar nome/consentimento, pede o áudio. O áudio termina o cadastro com "Cadastro concluído.", sem abrir o menu.
+- Sem `WHATSAPP_FLOW_ID` (fallback): boas-vindas com botão "Aceito" + link do termo e pergunta do nome; depois pede o áudio e confirma o cadastro, sem abrir o menu.
+- O menu de serviços só aparece se a pessoa pedir explicitamente "menu" depois do cadastro.
 - Tabela `users`: `wa_id_hash`, `wa_id` (cifrado ou, no mínimo, acesso restrito), dados do cadastro, `consent_at`, `terms_version`, `registered_at`. RLS ligado; só a service key do Worker acessa.
 - Instruções para publicar o Flow em `docs/PENDENCIAS_HUMANAS.md`.
 
 **Critérios de aceite**
-- **C4.1** Com Flow: de "oi" até o menu, o bot envia **2** mensagens.
-- **C4.2** Fallback: de "oi" até o menu, o bot envia **1 + nº de campos** mensagens (a confirmação vai junto com o menu).
+- **C4.1** Com Flow: nome e aceite → pedido de áudio → áudio → confirmação textual, sem menu.
+- **C4.2** Fallback: consentimento e nome → pedido de áudio → áudio → confirmação textual, sem menu.
 - **C4.3** Dado inválido (no Flow ou no fallback) → nada inválido é salvo; dica única.
 - **C4.4** Sem aceite → nada além do identificador técnico é salvo; com aceite → `consent_at` e `terms_version` gravados.
 - **C4.5** Migrações aplicam limpo em PGlite; RLS habilitado nas tabelas com dados pessoais.
 - **C4.6** `flows/cadastro.json` é JSON válido, tem todos os campos de `fields.ts` e o aceite obrigatório.
-- **C4.7** Usuário já cadastrado que manda "oi" vai direto ao menu (não refaz cadastro).
+- **C4.7** Usuário já cadastrado que manda "oi" recebe a confirmação sem refazer cadastro; "menu" explícito abre os serviços.
 
 ---
 

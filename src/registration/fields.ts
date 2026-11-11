@@ -15,7 +15,7 @@ export interface FieldDef {
 
 const clean = (s: string): string => s.replace(/\s+/g, " ").trim();
 const hasLetter = (s: string): boolean => /\p{L}/u.test(s);
-/** "oi", "sim", "menu"... não são nome nem cidade: evita gravar uma saudação como dado. */
+/** "oi", "sim", "menu"... não são nomes: evita gravar uma saudação como dado. */
 const isCommandWord = (s: string): boolean => intentsOf(s).size > 0;
 
 function textBetween(min: number, max: number) {
@@ -26,10 +26,17 @@ function textBetween(min: number, max: number) {
   };
 }
 
-export function validateEmail(raw: string): string | null {
-  const v = raw.trim().toLowerCase();
-  if (v.length > 254 || /\s/.test(v)) return null;
-  return /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)*\.[^\s@.]{2,}$/.test(v) ? v : null;
+/**
+ * Turma do Inteli: tem sempre um número (T27, T26, T24...). Letras sozinhas ("ciência da computação") não servem.
+ * Só números muito discrepantes (4 dígitos ou mais seguidos) são recusados; o formato em si é flexível.
+ */
+export function validClassName(raw: string): string | null {
+  const v = clean(raw);
+  if (v.length < 2 || v.length > 40 || isCommandWord(v)) return null;
+  const numbers = v.match(/\d+/g);
+  if (!numbers) return null; // só letras
+  if (numbers.some((n) => n.length > 3)) return null; // número fora do padrão
+  return v;
 }
 
 export const FIELDS: readonly FieldDef[] = [
@@ -40,16 +47,10 @@ export const FIELDS: readonly FieldDef[] = [
     validate: textBetween(2, 100),
   },
   {
-    key: "email",
-    prompt: "Qual é o seu e-mail?",
-    hint: "Esse e-mail não parece válido. Envie no formato nome@exemplo.com.",
-    validate: validateEmail,
-  },
-  {
-    key: "city",
-    prompt: "Em qual cidade você mora?",
-    hint: "Não consegui ler a cidade. Envie o nome da sua cidade (de 2 a 80 caracteres).",
-    validate: textBetween(2, 80),
+    key: "class_name",
+    prompt: "Qual é a sua turma? (ex.: T27, T26, T24)",
+    hint: "Não consegui ler a turma. As turmas têm um número, como T27, T26 ou T24. Envie o nome da sua turma.",
+    validate: validClassName,
   },
 ];
 

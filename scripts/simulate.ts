@@ -1,6 +1,7 @@
 // Simulador ponta a ponta (Etapa 8). Sem rede: Graph API falsa que conta envios, banco em memória,
 // R2 e analisador falsos, relógio controlável. Usa a mesma fiação de produção (route -> webhook ->
 // createEventHandler -> motor -> sendGuarded). Executado pelos testes: `npm run simulate`.
+import type { IntentAgent } from "../src/ai/agent";
 import { MemoryRepo } from "../src/db/memory-repo";
 import { route, type AppDeps } from "../src/index";
 import { loadConfig, type Config } from "../src/config";
@@ -22,9 +23,9 @@ export const HOUR = 60 * MINUTE;
 
 export interface SimOptions {
   start?: Date;
-  /** Usa o Flow para o cadastro (padrão true). */
-  flow?: boolean;
   env?: Record<string, string>;
+  /** Agente de IA falso (testes): sem rede. */
+  agent?: IntentAgent;
   /** Entrega cada webhook duas vezes (a Meta reenvia). */
   duplicateAll?: boolean;
 }
@@ -52,7 +53,8 @@ export class Simulator {
       WHATSAPP_TOKEN: "tok", PHONE_NUMBER_ID, APP_SECRET, VERIFY_TOKEN: "v", GRAPH_API_VERSION: "v21.0",
       SUPABASE_URL: "https://sim.invalid", SUPABASE_SERVICE_KEY: "k", ANALYZER_API_URL: "https://analyzer.invalid",
       ANALYZER_API_KEY: "k", ADMIN_TOKEN, PRIVACY_POLICY_URL: "https://example.com/privacidade", TERMS_VERSION: "sim-1",
-      ...(o.flow === false ? {} : { WHATSAPP_FLOW_ID: "FLOW-SIM" }),
+      // O cadastro novo tem ~7 mensagens do bot: os limites por pessoa da simulação seguem a produção (wrangler.toml).
+      MAX_BOT_MSGS_PER_USER_PER_10MIN: "10", MAX_BOT_MSGS_PER_USER_PER_DAY: "40",
       ...o.env,
     });
     const logger: Logger = { log: (level, event) => void this.logs.push({ level, event }) };
@@ -69,7 +71,7 @@ export class Simulator {
       return new Response(JSON.stringify({ messages: [{ id: `wamid.OUT${this.sent.length}` }] }), { status: 200 });
     };
     const media: MediaClient = {
-      getInfo: async () => ({ url: "https://cdn.sim.invalid/a", mimeType: "audio/ogg", fileSize: 100 }),
+      getInfo: async (id: string) => ({ url: "https://cdn.sim.invalid/a", mimeType: id.startsWith("DOC") ? "application/pdf" : "audio/ogg", fileSize: 100 }),
       download: async () => ({ ok: true, bytes: new Uint8Array(100).fill(7) }),
     };
     this.deps = {
@@ -77,6 +79,7 @@ export class Simulator {
       onEvent: createEventHandler(this.cfg, {
         repo: this.repo, logger, content, fetchImpl: graph as unknown as typeof fetch, now: () => this.now(),
         audio: { media, store: this.store, analyzer: this.analyzer },
+        ...(o.agent ? { agent: o.agent } : {}),
       }),
       admin: {
         adminToken: ADMIN_TOKEN, repo: this.repo, logger, phoneNumberId: PHONE_NUMBER_ID,
@@ -130,9 +133,8 @@ export class Simulator {
   list(from: string, id: string) {
     return this.message(from, { type: "interactive", interactive: { type: "list_reply", list_reply: { id, title: "x" } } });
   }
-  form(from: string) {
-    const json = JSON.stringify({ flow_token: "t", full_name: "Maria da Silva", email: `${from}@exemplo.com`, city: "Recife", consent: true });
-    return this.message(from, { type: "interactive", interactive: { type: "nfm_reply", nfm_reply: { name: "flow", body: "Sent", response_json: json } } });
+  document(from: string, mime = "application/pdf", filename = "duvidas.pdf") {
+    return this.message(from, { type: "document", document: { id: "DOC1", mime_type: mime, filename } });
   }
   audio(from: string) {
     return this.message(from, { type: "audio", audio: { id: "MEDIA1", mime_type: "audio/ogg; codecs=opus", voice: true } });
@@ -149,16 +151,15 @@ export class Simulator {
     return res.status;
   }
 
-  /** Cadastro completo (oi -> Flow/consentimento -> escolha do serviço de áudio). Não manda o áudio. */
+  /** Cadastro completo: oi -> aceite -> nome -> turma -> áudio de perfil -> papel (mentorado) -> sem dúvida agora. */
   async register(p: string, step = 0): Promise<void> {
     await this.text(p, "oi"); this.advance(step);
-    if (this.cfg.whatsappFlowId) { await this.form(p); this.advance(step); }
-    else {
-      await this.button(p, "consent_yes"); this.advance(step);
-      await this.text(p, "Maria da Silva"); this.advance(step);
-      await this.text(p, `${p}@exemplo.com`); this.advance(step);
-      await this.text(p, "Recife"); this.advance(step);
-    }
+    await this.button(p, "consent_yes"); this.advance(step);
+    await this.text(p, "Maria da Silva"); this.advance(step);
+    await this.text(p, "Turma 12"); this.advance(step);
+    await this.audio(p); this.advance(step);
+    await this.button(p, "prof_mentorado"); this.advance(step);
+    await this.button(p, "doubt_no"); this.advance(step);
   }
   async chooseAudio(p: string) { await this.list(p, "svc_audio"); }
 }
@@ -169,12 +170,13 @@ export interface Metrics {
 
 const allOk = (s: Simulator) => s.statuses.every((c) => c === 200);
 
-/** S1: 300 pessoas novas, cadastro + 1 áudio, no mesmo mês. */
+/** S1: 400 pessoas novas enviam cadastro + áudio de apresentação, no mesmo mês. */
 export async function runS1(): Promise<Metrics> {
   const s = new Simulator();
-  const N = 300;
+  const N = 400;
   const stages: ((p: string) => Promise<unknown>)[] = [
-    (p) => s.text(p, "oi"), (p) => s.form(p), (p) => s.chooseAudio(p), (p) => s.audio(p),
+    (p) => s.text(p, "oi"), (p) => s.button(p, "consent_yes"), (p) => s.text(p, "Maria da Silva"),
+    (p) => s.text(p, "Turma 12"), (p) => s.audio(p),
   ];
   let cutAt = -1;
   let afterCut = 0;
@@ -210,6 +212,8 @@ export async function runS3(): Promise<Metrics> {
   const s = new Simulator();
   const a = s.phone(1);
   await s.register(a, 30_000);
+  s.advance(11 * MINUTE);
+  await s.text(a, "menu"); s.advance(30_000);
   await s.chooseAudio(a); s.advance(30_000);
   await s.audio(a);
   const newPerson = s.sentTo(a).length;
@@ -234,6 +238,8 @@ export async function runS4(): Promise<Metrics> {
     for (let i = 0; i < 20; i++) {
       const p = s.phone(i);
       await s.register(p, 1000);
+      s.advance(11 * MINUTE);
+      await s.text(p, "menu"); s.advance(1000);
       await s.chooseAudio(p); s.advance(1000);
       await s.audio(p); s.advance(1000);
     }
@@ -257,7 +263,7 @@ export async function runS5(): Promise<Metrics> {
   const beforeSignal = s.sentCount;
   await s.status(`wamid.OUT1`, { billable: true, pricing_model: "PMP", type: "regular", category: "marketing" });
   for (let i = 20; i < people; i++) { await s.text(s.phone(i), "oi"); s.advance(1000); }
-  for (let i = 0; i < 20; i++) { await s.form(s.phone(i)); s.advance(1000); }
+  for (let i = 0; i < 20; i++) { await s.button(s.phone(i), "consent_yes"); s.advance(1000); }
   const afterSignal = s.sentCount - beforeSignal;
   const lockedWhileOpen = (await s.repo.getManualLock(PHONE_NUMBER_ID)).locked;
   const unlockStatus = await s.unlock();

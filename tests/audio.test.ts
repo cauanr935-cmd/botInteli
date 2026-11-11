@@ -165,7 +165,7 @@ describe("C6.2 armazenamento", () => {
     expect(key).not.toContain(WA);
     expect(key).toContain(await s.hash);
     const row = [...s.repo.audios.values()][0]!;
-    expect(row).toMatchObject({ r2Key: key, mime: "audio/ogg", bytes: 100, status: "done", serviceId: "audio", waIdHash: await s.hash });
+    expect(row).toMatchObject({ r2Key: key, mime: "audio/ogg", bytes: 100, status: "done", serviceId: "mentoria", waIdHash: await s.hash });
     expect(row.finishedAt).not.toBeNull();
     expect(JSON.stringify(row)).not.toContain(WA);
   });
@@ -407,5 +407,62 @@ describe("C6.8 áudio fora de AWAIT_AUDIO e consentimento", () => {
     const r = await db.query<{ n: number }>("select count(*)::int as n from audios");
     expect(r.rows[0]!.n).toBe(1);
     await expect(ins("desconhecido")).rejects.toThrow();
+  });
+});
+
+describe("arquivos de áudio gravados antes (qualquer formato comum)", () => {
+  it("canonicalAudioMime/resolveAudioMime: aliases, extensão e tipos genéricos", async () => {
+    const { canonicalAudioMime, resolveAudioMime, audioMimeFromFilename, audioKey } = await import("../src/audio/storage");
+    expect(canonicalAudioMime("audio/x-m4a")).toBe("audio/mp4");
+    expect(canonicalAudioMime("audio/mp3")).toBe("audio/mpeg");
+    expect(canonicalAudioMime("audio/x-wav")).toBe("audio/wav");
+    expect(canonicalAudioMime("audio/wav; codecs=1")).toBe("audio/wav");
+    expect(canonicalAudioMime("audio/webm;codecs=opus")).toBe("audio/webm");
+    expect(canonicalAudioMime("application/ogg")).toBe("audio/ogg");
+    expect(canonicalAudioMime("audio/flac")).toBe("audio/flac");
+    expect(canonicalAudioMime("application/pdf")).toBeNull();
+    expect(canonicalAudioMime("video/mp4")).toBeNull();
+    expect(audioMimeFromFilename("Reunião 10-11.M4A")).toBe("audio/mp4");
+    expect(audioMimeFromFilename("mentoria.exe")).toBeNull();
+    // tipo ausente ou genérico: vale a extensão; tipo claramente não-áudio continua recusado
+    expect(resolveAudioMime("", "gravacao.wav")).toBe("audio/wav");
+    expect(resolveAudioMime("application/octet-stream", "gravacao.mp3")).toBe("audio/mpeg");
+    expect(resolveAudioMime("application/pdf", "gravacao.mp3")).toBeNull();
+    expect(resolveAudioMime(undefined, "semextensao")).toBeNull();
+    expect(audioKey("h", new Date("2026-11-10T15:00:00Z"), "America/Sao_Paulo", "id1", "audio/x-m4a")).toBe("audios/h/2026-11/id1.m4a");
+  });
+
+  it("webhook: arquivo de áudio anexado como 'Documento' vira áudio; PDF continua documento", async () => {
+    const { parseWebhookPayload: parseWebhook } = await import("../src/whatsapp/parser");
+    const msg = (document: Record<string, string>) => parseWebhook({
+      object: "whatsapp_business_account",
+      entry: [{ changes: [{ value: { messages: [{ id: "w1", from: "5511987651234", type: "document", document }] } }] }],
+    });
+    const a = msg({ id: "M1", mime_type: "audio/x-m4a", filename: "mentoria.m4a" });
+    expect(a[0]).toMatchObject({ type: "audio", mediaId: "M1", mimeType: "audio/mp4", voice: false });
+    const b = msg({ id: "M2", mime_type: "application/octet-stream", filename: "mentoria.wav" });
+    expect(b[0]).toMatchObject({ type: "audio", mimeType: "audio/wav" });
+    const c = msg({ id: "M3", mime_type: "application/pdf", filename: "duvidas.pdf" });
+    expect(c[0]).toMatchObject({ type: "document" });
+  });
+
+  it.each([
+    ["audio/wav", "wav"], ["audio/x-m4a", "m4a"], ["audio/mp3", "mp3"], ["audio/webm", "webm"], ["audio/flac", "flac"], ["audio/aac", "aac"],
+  ])("mentoria aceita e guarda %s (sem análise obrigatória)", async (mime, ext) => {
+    const s = setup({ info: async () => ({ url: "https://cdn.example/a", mimeType: mime, fileSize: 100 }) });
+    await s.ready();
+    await s.feed(audio({ mimeType: mime }));
+    expect(s.store.objects.size).toBe(1);
+    const [key, obj] = [...s.store.objects.entries()][0]!;
+    expect(key.endsWith(`.${ext}`)).toBe(true);
+    expect(obj.mime).toMatch(/^audio\//);
+    expect(s.repo.audios.size).toBe(1);
+  });
+
+  it("outros tipos (imagem, PDF) continuam recusados", async () => {
+    const s = setup({ info: async () => ({ url: "https://cdn.example/a", mimeType: "image/jpeg", fileSize: 100 }) });
+    await s.ready();
+    await s.feed(audio({ mimeType: "audio/ogg" }));
+    expect(s.store.objects.size).toBe(0);
   });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { runS1, runS2, runS3, runS4, runS5, runS6, runS7 } from "../scripts/simulate";
 
 describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
-  it("C8.1 S1 estouro de orçamento: 300 pessoas novas (cadastro + áudio) não passam de stop_at; zero envios depois do corte; webhook sempre 200", async () => {
+  it("C8.1 S1 estouro de orçamento: cadastros com áudio não passam de stop_at; zero envios depois do corte; webhook sempre 200", async () => {
     const m = await runS1();
     expect(m.stopAt).toBe(950);
     expect(m.sends).toBeLessThanOrEqual(950);
@@ -10,7 +10,7 @@ describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
     expect(m.cutReached).toBe(true);
     expect(m.sendsAfterCut).toBe(0);
     expect(m.allWebhooks200).toBe(true);
-    expect(m.webhooks).toBe(1200);
+    expect(m.webhooks).toBe(2000);
     expect(m.critical).toBe(1);
     expect(m.warn80).toBe(1);
   });
@@ -21,12 +21,12 @@ describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
     expect(m.allWebhooks200).toBe(true);
   });
 
-  it("C8.1 S3 economia: pessoa nova com Flow + áudio = 4; áudio extra = 1; cadastrada voltando = 3", async () => {
+  it("C8.1 S3: cadastro com Flow, áudio de apresentação, menu explícito e uso de serviço", async () => {
     const m = await runS3();
-    expect(m.newPerson).toBe(4);
+    expect(m.newPerson).toBe(10); // 7 do cadastro + menu + serviço + resposta do áudio
     expect(m.extraAudio).toBe(1);
     expect(m.returning).toBe(3);
-    expect(m.audiosStored).toBe(3);
+    expect(m.audiosStored).toBe(4); // inclui o áudio de perfil
     expect(m.allWebhooks200).toBe(true);
   });
 
@@ -34,7 +34,7 @@ describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
     const m = await runS4();
     expect(m.webhooksDuplicated).toBe(2 * (m.webhooksSingle as number));
     expect(m.sendsDuplicated).toBe(m.sendsSingle);
-    expect(m.maxPerPersonDuplicated).toBe(4);
+    expect(m.maxPerPersonDuplicated).toBe(10);
     expect(m.audiosDuplicated).toBe(m.audiosSingle);
     expect(m.allWebhooks200).toBe(true);
   });
@@ -60,11 +60,11 @@ describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
     expect(m.allWebhooks200).toBe(true);
   });
 
-  it("C8.1 S7 rajada: 100 mensagens de uma pessoa em 1 minuto geram no máximo 4 envios (10 min) e nunca mais que 12 (dia)", async () => {
+  it("C8.1 S7 rajada: 100 mensagens de uma pessoa em 1 minuto geram no máximo o limite de 10 min e nunca mais que o do dia", async () => {
     const m = await runS7();
     expect(m.sends).toBeLessThanOrEqual(m.maxPer10Min as number);
     expect(m.sends).toBeLessThanOrEqual(m.maxPerDay as number);
-    expect(m.sends).toBe(4);
+    expect(m.sends).toBe(m.maxPer10Min);
     expect(m.allWebhooks200).toBe(true);
   });
 });

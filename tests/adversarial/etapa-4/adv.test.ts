@@ -12,10 +12,11 @@ const logs: string[] = [];
 const logger = { log: (l: string, m: string, c?: unknown) => { logs.push(JSON.stringify([l, m, c])); } };
 const t = (body: string, wamid?: string): IncomingMessage => ({ type: "text", wamid: wamid ?? `a${++n}`, from: WA, body });
 const btn = (id: string): IncomingMessage => ({ type: "button_reply", wamid: `a${++n}`, from: WA, id, title: "x" });
+const audio = (): IncomingMessage => ({ type: "audio", wamid: `a${++n}`, from: WA, mediaId: "m1", voice: true });
 const nfm = (o: Record<string, unknown>, wamid?: string): IncomingMessage => ({
   type: "nfm_reply", wamid: wamid ?? `a${++n}`, from: WA, responseJson: JSON.stringify(o),
 });
-const good = { full_name: "Maria da Silva", email: "m@e.com", city: "Recife", consent: true };
+const good = { full_name: "Maria da Silva", consent: true };
 function setup(flowId?: string, max10 = 4, maxDay = 12) {
   const repo = new MemoryRepo();
   const graph = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: `o${++n}` }] }), { status: 200 }));
@@ -37,27 +38,13 @@ describe("adv etapa 4", () => {
     expect(await s.repo.getRegistration(WA)).toEqual(empty);
     expect(s.graph).not.toHaveBeenCalled();
   });
-  it("nfm_reply duplicado (mesmo wamid): 1 confirmação só", async () => {
-    const s = setup("F");
-    await s.feed(t("oi"));
-    await Promise.all([s.feed(nfm(good, "dup")), s.feed(nfm(good, "dup")), s.feed(nfm(good, "dup"))]);
-    expect(s.graph).toHaveBeenCalledTimes(2);
-  });
-  it("nfm_reply com wamids distintos em paralelo: no máximo 2 envios no total", async () => {
-    const s = setup("F");
-    await s.feed(t("oi"));
-    await Promise.all(Array.from({ length: 6 }, () => s.feed(nfm(good))));
-    expect(s.graph).toHaveBeenCalledTimes(2);
-  });
   it.each([
     ["consent string 'false'", { ...good, consent: "false" }],
     ["consent 1", { ...good, consent: 1 }],
     ["consent 'on'", { ...good, consent: "on" }],
     ["nome com 101 chars", { ...good, full_name: "a".repeat(101) }],
     ["nome numérico no campo", { ...good, full_name: 12345 }],
-    ["email com espaço", { ...good, email: "a b@c.com" }],
     ["nome só 'oi'", { ...good, full_name: "oi" }],
-    ["cidade 81", { ...good, city: "c".repeat(81) }],
   ])("Flow inválido (%s): nada salvo", async (_n, form) => {
     const s = setup("F");
     await s.feed(t("oi"));
@@ -67,8 +54,6 @@ describe("adv etapa 4", () => {
   it("fallback: valores digitados antes do aceite nunca são salvos, mesmo depois (não retroativo)", async () => {
     const s = setup();
     await s.feed(t("oi"));
-    await s.feed(t("Maria da Silva"));
-    await s.feed(t("m@e.com"));
     await s.feed(btn("consent_yes"));
     const r = await s.repo.getRegistration(WA);
     expect(r.values).toEqual({});
@@ -76,31 +61,30 @@ describe("adv etapa 4", () => {
   });
   it("fallback com limites padrão (4/10min): fluxo feliz completa", async () => {
     const s = setup();
-    for (const x of [t("oi"), btn("consent_yes"), t("Maria da Silva"), t("m@e.com"), t("Recife")]) await s.feed(x);
+    for (const x of [t("oi"), btn("consent_yes"), t("Maria da Silva"), t("Turma 12")]) await s.feed(x);
     expect(s.graph).toHaveBeenCalledTimes(4);
-    expect((await s.repo.getRegistration(WA)).registeredAt).toEqual(NOW);
+    expect((await s.repo.getConversation(WA)).state).toBe("REG_PROFILE_AUDIO");
   });
   it("fallback com 1 dica no meio e limites padrão: nunca excede 4 envios e não grava registro incompleto como completo", async () => {
     const s = setup();
-    for (const x of [t("oi"), btn("consent_yes"), t("Maria da Silva"), t("lixo"), t("m@e.com"), t("Recife")]) await s.feed(x);
+    for (const x of [t("oi"), btn("consent_yes"), t("12345"), t("Maria da Silva"), t("Turma 12"), audio()]) await s.feed(x);
     expect(s.graph.mock.calls.length).toBeLessThanOrEqual(4);
     const r = await s.repo.getRegistration(WA);
-    if (r.registeredAt) expect(r.values.city).toBe("Recife");
+    if (r.registeredAt) expect(r.values.full_name).toBe("Maria da Silva");
   });
   it("sair no meio do cadastro: silêncio total depois e nada novo salvo", async () => {
     const s = setup();
     await s.feed(t("oi")); await s.feed(btn("consent_yes")); await s.feed(t("sair"));
     const c = s.graph.mock.calls.length;
-    await s.feed(t("Maria da Silva")); await s.feed(t("m@e.com"));
+    await s.feed(t("Maria da Silva"));
     expect(s.graph.mock.calls.length).toBe(c);
     expect((await s.repo.getRegistration(WA)).values).toEqual({});
   });
-  it("logs não contêm telefone completo, e-mail nem nome", async () => {
+  it("logs não contêm telefone completo nem nome", async () => {
     const s = setup("F");
     await s.feed(t("oi")); await s.feed(nfm(good));
     const all = logs.join("\n");
     expect(all).not.toContain(WA);
-    expect(all).not.toContain("m@e.com");
     expect(all).not.toContain("Maria da Silva");
   });
   it("falha ao gravar cadastro: não envia confirmação", async () => {

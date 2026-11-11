@@ -25,9 +25,9 @@ export interface ContentSource {
 
 /** Serviços usados se o banco estiver vazio ou fora (mesmo conteúdo do seed). */
 export const DEFAULT_SERVICES: readonly Service[] = [
-  { id: "audio", title: "Análise de áudio", description: "Envie um áudio e receba a análise", requiresAudio: true, sortOrder: 10 },
-  { id: "horarios", title: "Horários", description: "Dias e horários de atendimento", requiresAudio: false, sortOrder: 20 },
-  { id: "contato", title: "Contato", description: "Como falar com a equipe", requiresAudio: false, sortOrder: 30 },
+  { id: "mentoria", title: "Registrar mentoria", description: "Anexe o áudio da mentoria", requiresAudio: true, sortOrder: 5 },
+  { id: "horarios", title: "Horários", description: "Informe seus dias e horários livres", requiresAudio: false, sortOrder: 20 },
+  { id: "contato", title: "Contato", description: "Fale com o Cauã, da Be My Mentor", requiresAudio: false, sortOrder: 30 },
 ];
 
 export const MENU_MAX_SERVICES = LIMITS.listMaxRows;

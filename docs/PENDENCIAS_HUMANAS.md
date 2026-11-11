@@ -20,7 +20,7 @@ Coisas que só uma pessoa da equipe pode fazer. Os agentes acrescentam itens aqu
 ## Conformidade
 - [ ] Publicar a política de privacidade e definir `PRIVACY_POLICY_URL` e `TERMS_VERSION`.
 - [ ] Verificar a empresa no Meta Business Manager.
-- [ ] Definir os campos definitivos do cadastro (hoje: nome, e-mail, cidade).
+- [x] Definir o cadastro: nome completo e aceite LGPD; perguntas pessoais respondidas por áudio.
 - [ ] Confirmar o fuso da conta de mensagens na Meta e ajustar `META_ACCOUNT_TIMEZONE` se não for `America/Sao_Paulo`.
 - [ ] **Não** cadastrar forma de pagamento no Billing Hub enquanto a meta for custo zero (segunda proteção além do disjuntor).
 
@@ -37,6 +37,7 @@ Coisas que só uma pessoa da equipe pode fazer. Os agentes acrescentam itens aqu
 - [ ] Se o editor reclamar da versão do Flow JSON (`6.2`), usar a versão mais recente aceita e conferir se os componentes TextInput/OptIn/Footer continuam válidos.
 - [ ] Testar o Flow no modo de pré-visualização e depois publicar (rascunho não pode ser enviado a usuários).
 - [ ] Copiar o ID do Flow para `WHATSAPP_FLOW_ID`. Sem ele, o bot usa o cadastro por perguntas (fallback).
+- [ ] Confirmar que o Flow pede apenas nome completo e aceite; o áudio de apresentação é solicitado depois do formulário.
 - [ ] Se trocar os campos do cadastro: editar `src/registration/fields.ts`, `flows/cadastro.json` e uma migração nova com as colunas.
 
 ## Etapa 6 — Pipeline de áudio
@@ -47,3 +48,18 @@ Coisas que só uma pessoa da equipe pode fazer. Os agentes acrescentam itens aqu
 ## Etapa 7 — Operação
 - [ ] Aplicar `supabase/migrations/0008_housekeeping.sql` no Supabase (cron depende de `release_stuck_processing`).
 - [ ] Seguir `docs/DEPLOY.md` (contas, secrets, bucket, webhook, número de teste, chip) e o checklist de produção.
+
+## IA (Groq / xAI Grok)
+- [ ] Enviar a chave: `npx wrangler secret put AI_API_KEY`. Confirmar o nome do modelo (`AI_MODEL`) no console do provedor: os padrões podem ter sido renomeados.
+- [ ] LGPD: o texto das mensagens (após o consentimento) é enviado ao provedor de IA para classificar a intenção e ler horários. Citar isso na política de privacidade (`PRIVACY_POLICY_URL`) e revisar o termo de consentimento.
+
+## Termos de Uso e Política de Privacidade (LGPD)
+Página pública em `GET /privacidade` (e `/termos`), texto em `src/legal/page.ts`. **É um rascunho técnico: precisa de revisão de advogado(a) antes de divulgar.**
+- [ ] Preencher `LEGAL_INFO` em `src/legal/page.ts`: razão social/nome, CNPJ/CPF, endereço, e-mail para pedidos dos titulares, encarregado (DPO, art. 41) e foro. Enquanto houver campo vazio, a página mostra "RASCUNHO".
+- [ ] Apontar o consentimento para a página: `echo "https://bot-whatsapp.bot-whatsaap-inteli.workers.dev/privacidade" | npx wrangler secret put PRIVACY_POLICY_URL` e fazer o deploy.
+- [ ] **Blockchain**: a política diz que só vão informações pseudonimizadas (ids e hashes), nunca o texto da transcrição, nome ou telefone. Garantir que o sistema de validação faça isso: dado pessoal em blockchain não pode ser apagado depois (conflita com o art. 18 da LGPD).
+- [ ] Confirmar os prazos de guarda propostos (12 meses após o último contato; 5 anos para mentorias e validações; 6 meses de logs) e a lista de operadores (Meta, Cloudflare, Supabase, Groq, transcrição/blockchain).
+- [ ] Confirmar que a diarização (identificar quem falou) não é usada para autenticar ou identificar pessoas fora da mentoria; se for, tratar a voz como dado biométrico (sensível, art. 11) com consentimento específico.
+- [ ] Decidir sobre menores de 18 anos (a política exige consentimento de responsável) e se o bot deve perguntar a idade.
+- [ ] Quem aceitou antes (versão `2025-01`) não aceitou esta versão: avaliar pedir novo aceite.
+- [ ] Criar o procedimento interno para atender pedidos de acesso/correção/eliminação (hoje não há comando no bot; o pedido é manual, pelo e-mail ou WhatsApp).

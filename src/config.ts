@@ -6,6 +6,12 @@ export const MAX_STOP_AT = 990;
 /** Margem máxima: garante STOP_AT >= 500 (nunca zero/negativo). */
 export const MAX_SAFETY_MARGIN = 500;
 
+/** Provedores de IA com API no formato OpenAI (chat/completions). O modelo é só um padrão: troque por AI_MODEL. */
+export const AI_PROVIDERS = {
+  groq: { baseUrl: "https://api.groq.com/openai/v1", model: "openai/gpt-oss-120b" },
+  xai: { baseUrl: "https://api.x.ai/v1", model: "grok-4" },
+} as const;
+
 export interface Config {
   whatsappToken: string;
   phoneNumberId: string;
@@ -14,8 +20,9 @@ export interface Config {
   graphApiVersion: string;
   supabaseUrl: string;
   supabaseServiceKey: string;
-  analyzerApiUrl: string;
-  analyzerApiKey: string;
+  /** O analisador é opcional durante a implantação inicial. Sem ele, áudios ficam desativados. */
+  analyzerApiUrl?: string;
+  analyzerApiKey?: string;
   adminToken: string;
   metaAccountTimezone: string;
   budgetSafetyMargin: number;
@@ -27,6 +34,11 @@ export interface Config {
   termsVersion: string;
   maxAudioBytes: number;
   analyzerTimeoutMs: number;
+  /** IA (Groq `gsk_…` ou xAI Grok `xai-…`; API no formato OpenAI). Sem chave, o bot funciona sem IA. */
+  aiApiKey?: string;
+  aiModel: string;
+  aiBaseUrl: string;
+  aiTimeoutMs: number;
 }
 
 export class ConfigError extends Error {
@@ -81,8 +93,11 @@ export function loadConfig(env: Env): Config {
   const verifyToken = req("VERIFY_TOKEN");
   const supabaseUrl = req("SUPABASE_URL");
   const supabaseServiceKey = req("SUPABASE_SERVICE_KEY");
-  const analyzerApiUrl = req("ANALYZER_API_URL");
-  const analyzerApiKey = req("ANALYZER_API_KEY");
+  const analyzerApiUrl = opt("ANALYZER_API_URL", "");
+  const analyzerApiKey = opt("ANALYZER_API_KEY", "");
+  if ((analyzerApiUrl === "") !== (analyzerApiKey === "")) {
+    problems.push("ANALYZER_API_URL e ANALYZER_API_KEY devem ser configuradas juntas");
+  }
   const adminToken = req("ADMIN_TOKEN");
   const privacyPolicyUrl = req("PRIVACY_POLICY_URL");
   const termsVersion = req("TERMS_VERSION");
@@ -106,17 +121,28 @@ export function loadConfig(env: Env): Config {
   const maxAudioBytes = parseInteger(env, "MAX_AUDIO_BYTES", 16_000_000, 1, problems);
 
   const analyzerTimeoutMs = parseInteger(env, "ANALYZER_TIMEOUT_MS", 8000, 100, problems);
+  const aiTimeoutMs = parseInteger(env, "AI_TIMEOUT_MS", 6000, 500, problems);
+  // Chave: AI_API_KEY (preferida) ou os nomes antigos XAI_API_KEY / GROQ_API_KEY. O provedor vem do prefixo da chave.
+  const aiApiKey = opt("AI_API_KEY", "") || opt("XAI_API_KEY", "") || opt("GROQ_API_KEY", "");
+  const provider = aiApiKey.startsWith("gsk_") ? AI_PROVIDERS.groq : AI_PROVIDERS.xai;
+  const aiBaseUrl = opt("AI_BASE_URL", "") || opt("XAI_BASE_URL", "") || provider.baseUrl;
+  if (!/^https:\/\//.test(aiBaseUrl)) problems.push("AI_BASE_URL deve começar com https://");
+  const aiModel = opt("AI_MODEL", "") || opt("XAI_MODEL", "") || provider.model;
 
   if (problems.length > 0) throw new ConfigError(problems);
 
   const flow = opt("WHATSAPP_FLOW_ID", "");
   return {
     whatsappToken, phoneNumberId, appSecret, verifyToken, graphApiVersion,
-    supabaseUrl, supabaseServiceKey, analyzerApiUrl, analyzerApiKey, adminToken,
+    supabaseUrl, supabaseServiceKey,
+    ...(analyzerApiUrl && analyzerApiKey ? { analyzerApiUrl, analyzerApiKey } : {}),
+    adminToken,
     metaAccountTimezone: opt("META_ACCOUNT_TIMEZONE", "America/Sao_Paulo"),
     budgetSafetyMargin, stopAt,
     maxBotMsgsPerUserPerDay, maxBotMsgsPerUserPer10Min,
     ...(flow ? { whatsappFlowId: flow } : {}),
     privacyPolicyUrl, termsVersion, maxAudioBytes, analyzerTimeoutMs,
+    ...(aiApiKey ? { aiApiKey } : {}),
+    aiModel, aiBaseUrl, aiTimeoutMs,
   };
 }

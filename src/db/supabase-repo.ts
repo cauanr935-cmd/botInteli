@@ -1,12 +1,13 @@
+import { maskPhone } from "../lib/logger";
 import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
   AudioRecord,
-  BudgetRow, ConversationFields, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaDraft, MentoriaRepo, MentoriaRow, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 /** Repo sobre a API REST (PostgREST) do Supabase. */
-export class SupabaseRepo implements Repo {
+export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
   constructor(
     private readonly url: string,
     private readonly serviceKey: string,
@@ -102,7 +103,7 @@ export class SupabaseRepo implements Repo {
 
   // ---- Etapa 4: cadastro ----
   async getRegistration(waId: string): Promise<RegistrationRecord> {
-    const cols = ["consent_at", "terms_version", "registered_at", ...FIELD_KEYS].join(",");
+    const cols = ["consent_at", "terms_version", "registered_at", "profile_role", "mentor_categories", "profile_about", "availability_slots", "availability_at", ...FIELD_KEYS].join(",");
     const res = await this.fetchImpl(
       `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&select=${cols}`,
       { headers: this.headers() },
@@ -115,6 +116,11 @@ export class SupabaseRepo implements Repo {
     return {
       consentAt: d(r?.consent_at), termsVersion: (r?.terms_version as string | null) ?? null,
       registeredAt: d(r?.registered_at), values,
+      ...(r?.profile_role === "mentor" || r?.profile_role === "mentorado" || r?.profile_role === "ambos" ? { profileRole: r.profile_role } : {}),
+      ...(Array.isArray(r?.mentor_categories) ? { mentorCategories: r.mentor_categories as string[] } : {}),
+      ...(typeof r?.profile_about === "string" ? { profileAbout: r.profile_about } : {}),
+      ...(Array.isArray(r?.availability_slots) ? { availabilitySlots: r.availability_slots as { day: string; start: string; end: string }[] } : {}),
+      availabilityAt: d(r?.availability_at),
     };
   }
 
@@ -125,6 +131,9 @@ export class SupabaseRepo implements Repo {
     if (p.termsVersion) body.terms_version = p.termsVersion;
     if (p.registeredAt) body.registered_at = p.registeredAt.toISOString();
     for (const [k, v] of Object.entries(p.values ?? {})) if (FIELD_KEYS.includes(k)) body[k] = v;
+    if (p.profileRole) body.profile_role = p.profileRole;
+    if (p.mentorCategories) body.mentor_categories = p.mentorCategories;
+    if (p.profileAbout) body.profile_about = p.profileAbout;
     const res = await this.fetchImpl(`${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}`, {
       method: "PATCH",
       headers: this.headers({ Prefer: "return=representation" }),
@@ -133,6 +142,38 @@ export class SupabaseRepo implements Repo {
     if (!res.ok) throw new Error(`supabase saveRegistration falhou: ${res.status}`);
     const rows = (await res.json()) as unknown[];
     if (!Array.isArray(rows) || rows.length === 0) throw new Error("supabase saveRegistration: usuario inexistente");
+  }
+
+  async saveAvailability(waId: string, text: string, at: Date, slots?: readonly { day: string; start: string; end: string }[]): Promise<void> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}`, {
+      method: "PATCH",
+      headers: { ...this.headers(), Prefer: "return=representation" },
+      body: JSON.stringify({ availability: text, availability_slots: slots ?? null, availability_at: at.toISOString() }),
+    });
+    if (!res.ok) throw new Error(`supabase saveAvailability falhou: ${res.status}`);
+    const rows = (await res.json()) as unknown[];
+    if (!Array.isArray(rows) || rows.length === 0) throw new Error("supabase saveAvailability: usuario inexistente");
+  }
+
+  async insertMaterial(_waId: string, m: { id: string; waIdHash: string; r2Key: string; mime: string; bytes: number; filename?: string; at: Date }): Promise<void> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/doubt_materials`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        id: m.id, wa_id_hash: m.waIdHash, r2_key: m.r2Key, mime: m.mime, bytes: m.bytes,
+        ...(m.filename ? { filename: m.filename } : {}), created_at: m.at.toISOString(),
+      }),
+    });
+    if (!res.ok) throw new Error(`supabase insertMaterial falhou: ${res.status}`);
+  }
+
+  async insertDoubt(_waId: string, d: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/doubts`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ id: crypto.randomUUID(), wa_id_hash: d.waIdHash, text: d.text, categories: d.categories, created_at: d.at.toISOString() }),
+    });
+    if (!res.ok) throw new Error(`supabase insertDoubt falhou: ${res.status}`);
   }
 
   async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
@@ -276,6 +317,7 @@ export class SupabaseRepo implements Repo {
       body: JSON.stringify({
         id: rec.id, wa_id_hash: rec.waIdHash, r2_key: rec.r2Key, mime: rec.mime, bytes: rec.bytes,
         service_id: rec.serviceId, status: rec.status, result: rec.result,
+        ...(rec.mentoria ? { subject: rec.mentoria.subject, ...(rec.mentoria.role ? { mentoria_role: rec.mentoria.role } : {}), ...(rec.mentoria.partner ? { partner: rec.mentoria.partner } : {}) } : {}),
         created_at: rec.createdAt.toISOString(),
       }),
     });
@@ -310,5 +352,134 @@ export class SupabaseRepo implements Repo {
   async releaseStuckProcessing(before: Date): Promise<number> {
     const n = await this.rpc<number | null>("release_stuck_processing", { p_before: before.toISOString() });
     return typeof n === "number" ? n : 0;
+  }
+
+  // ---- Mentorias ----
+  async getMentoriaDraft(waId: string): Promise<MentoriaDraft> {
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&select=draft_role,draft_subject,draft_partner`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase getMentoriaDraft falhou: ${res.status}`);
+    const r = ((await res.json()) as Record<string, string | null>[])[0];
+    const d: MentoriaDraft = {};
+    if (r?.draft_role === "mentor" || r?.draft_role === "mentorado") d.role = r.draft_role;
+    if (r?.draft_subject) d.subject = r.draft_subject;
+    if (r?.draft_partner) d.partner = r.draft_partner;
+    return d;
+  }
+
+  async saveMentoriaDraft(waId: string, patch: Partial<MentoriaDraft> | null): Promise<void> {
+    const body = patch === null
+      ? { draft_role: null, draft_subject: null, draft_partner: null }
+      : {
+          ...(patch.role !== undefined ? { draft_role: patch.role } : {}),
+          ...(patch.subject !== undefined ? { draft_subject: patch.subject } : {}),
+          ...(patch.partner !== undefined ? { draft_partner: patch.partner } : {}),
+        };
+    if (Object.keys(body).length === 0) return;
+    const res = await this.fetchImpl(`${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}`, {
+      method: "PATCH",
+      headers: this.headers({ Prefer: "return=representation" }),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`supabase saveMentoriaDraft falhou: ${res.status}`);
+    const rows = (await res.json()) as unknown[];
+    if (!Array.isArray(rows) || rows.length === 0) throw new Error("supabase saveMentoriaDraft: usuario inexistente");
+  }
+
+  private toMentoria(r: Record<string, unknown>): MentoriaRow {
+    return {
+      id: String(r.id), waIdHash: String(r.wa_id_hash),
+      role: r.mentoria_role === "mentor" || r.mentoria_role === "mentorado" ? r.mentoria_role : null,
+      subject: (r.subject as string | null) ?? null, partner: (r.partner as string | null) ?? null,
+      mime: String(r.mime), bytes: Number(r.bytes), r2Key: String(r.r2_key),
+      createdAt: new Date(String(r.created_at)),
+      analysisResult: r.analysis_result ?? null,
+      analysisAt: r.analysis_at ? new Date(String(r.analysis_at)) : null,
+    };
+  }
+
+  async listMentorias(o: { pending?: boolean; limit: number; before?: Date }): Promise<MentoriaRow[]> {
+    const q = [
+      "select=id,wa_id_hash,mentoria_role,subject,partner,mime,bytes,r2_key,created_at,analysis_result,analysis_at",
+      "subject=not.is.null", "order=created_at.desc", `limit=${Math.max(1, Math.min(200, o.limit))}`,
+      ...(o.pending ? ["analysis_result=is.null"] : []),
+      ...(o.before ? [`created_at=lt.${encodeURIComponent(o.before.toISOString())}`] : []),
+    ].join("&");
+    const res = await this.fetchImpl(`${this.url}/rest/v1/audios?${q}`, { headers: this.headers() });
+    if (!res.ok) throw new Error(`supabase listMentorias falhou: ${res.status}`);
+    const rows = ((await res.json()) as Record<string, unknown>[]).map((r) => this.toMentoria(r));
+    // Quem registrou: nome e telefone mascarado (cadastro), buscados por hash.
+    const hashes = [...new Set(rows.map((r) => r.waIdHash))];
+    if (hashes.length > 0) {
+      const ur = await this.fetchImpl(
+        `${this.url}/rest/v1/users?wa_id_hash=in.(${hashes.map(encodeURIComponent).join(",")})&select=wa_id_hash,wa_id,full_name`,
+        { headers: this.headers() },
+      );
+      if (ur.ok) {
+        const users = (await ur.json()) as { wa_id_hash: string; wa_id: string; full_name: string | null }[];
+        const byHash = new Map(users.map((u) => [u.wa_id_hash, u]));
+        for (const r of rows) {
+          const u = byHash.get(r.waIdHash);
+          if (u) r.registrant = { name: u.full_name, phoneMasked: maskPhone(u.wa_id) };
+        }
+      }
+    }
+    return rows;
+  }
+
+  async getMentoria(id: string): Promise<MentoriaRow | null> {
+    if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/audios?id=eq.${id}&subject=not.is.null&select=id,wa_id_hash,mentoria_role,subject,partner,mime,bytes,r2_key,created_at,analysis_result,analysis_at`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase getMentoria falhou: ${res.status}`);
+    const r = ((await res.json()) as Record<string, unknown>[])[0];
+    return r ? this.toMentoria(r) : null;
+  }
+
+  async setAnalysisResult(id: string, result: unknown, at: Date): Promise<boolean> {
+    if (!/^[0-9a-fA-F-]{36}$/.test(id)) return false;
+    const res = await this.fetchImpl(`${this.url}/rest/v1/audios?id=eq.${id}&subject=not.is.null`, {
+      method: "PATCH",
+      headers: this.headers({ Prefer: "return=representation" }),
+      body: JSON.stringify({ analysis_result: result, analysis_at: at.toISOString() }),
+    });
+    if (!res.ok) throw new Error(`supabase setAnalysisResult falhou: ${res.status}`);
+    const rows = (await res.json()) as unknown[];
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  // ---- Login do painel ----
+  async getLoginLock(key: string): Promise<{ failures: number; lockedUntil: Date | null }> {
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/panel_login_attempts?key=eq.${encodeURIComponent(key)}&select=failures,locked_until`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase getLoginLock falhou: ${res.status}`);
+    const r = ((await res.json()) as { failures: number; locked_until: string | null }[])[0];
+    return { failures: r?.failures ?? 0, lockedUntil: r?.locked_until ? new Date(r.locked_until) : null };
+  }
+
+  async recordLoginFailure(key: string, now: Date, maxFailures: number, lockMs: number): Promise<void> {
+    const cur = await this.getLoginLock(key);
+    const expired = cur.lockedUntil !== null && cur.lockedUntil <= now;
+    const failures = (expired ? 0 : cur.failures) + 1;
+    const lockedUntil = failures >= maxFailures ? new Date(now.getTime() + lockMs) : null;
+    const res = await this.fetchImpl(`${this.url}/rest/v1/panel_login_attempts?on_conflict=key`, {
+      method: "POST",
+      headers: this.headers({ Prefer: "resolution=merge-duplicates" }),
+      body: JSON.stringify({ key, failures, locked_until: lockedUntil ? lockedUntil.toISOString() : null, updated_at: now.toISOString() }),
+    });
+    if (!res.ok) throw new Error(`supabase recordLoginFailure falhou: ${res.status}`);
+  }
+
+  async clearLoginFailures(key: string): Promise<void> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/panel_login_attempts?key=eq.${encodeURIComponent(key)}`, {
+      method: "DELETE", headers: this.headers(),
+    });
+    if (!res.ok) throw new Error(`supabase clearLoginFailures falhou: ${res.status}`);
   }
 }
