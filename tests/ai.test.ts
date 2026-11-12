@@ -217,7 +217,7 @@ describe("horários lidos pela IA", () => {
     expect(lastBody(s, p)).toMatch(/Não consegui identificar os dias e horários/);
     const n = s.sentTo(p).length;
     await s.text(p, "talvez à noite?"); s.advance(1000);
-    expect(s.sentTo(p).length).toBe(n);
+    expect(s.sentTo(p).length).toBe(n + 1); // 2º texto sem horário: o Axo avisa em vez de calar
     expect(s.repo.availabilities.size).toBe(0);
     expect((await s.repo.getConversation(p)).state).toBe("AVAILABILITY_TEXT");
   });
@@ -288,13 +288,13 @@ describe("a IA NÃO tira dúvidas: só guarda", () => {
     expect(faqCalls).toHaveLength(0);
     expect(s.repo.doubts).toHaveLength(1);
   });
-  it("assunto sem relação ('vai chover hoje em São Paulo?') no texto da dúvida: silêncio e nada é guardado", async () => {
+  it("assunto sem relação ('vai chover hoje em São Paulo?') no texto da dúvida: aviso descontraído e nada é guardado", async () => {
     const agent: IntentAgent = { classify: async () => "fora_do_tema" };
     const s = mk(agent); const p = s.phone(21);
     await toDoubt(s, p);
     const n = s.sentTo(p).length;
     await s.text(p, "Vai chover hoje em São Paulo?"); s.advance(1000);
-    expect(s.sentTo(p).length).toBe(n);
+    expect(s.sentTo(p).length).toBe(n + 1); // aviso descontraído, nada é guardado
     expect(s.repo.doubts).toHaveLength(0);
     expect((await s.repo.getConversation(p)).state).toBe("DOUBT_TEXT");
   });
@@ -316,16 +316,16 @@ describe("IA responde só sobre o programa", () => {
     await s.text(p, "como funciona a mentoria?"); s.advance(1000);
     expect(texts).toEqual(["como funciona a mentoria?"]);
     expect(s.sentTo(p).length - n).toBe(1);
-    expect(lastBody(s, p)).toBe("Você pode ser mentor, mentorado ou os dois.");
+    expect(lastBody(s, p)).toMatch(/^Você pode ser mentor, mentorado ou os dois\.\n\nO que você quer fazer agora/); // a resposta e a pergunta da etapa, juntas
     expect((await s.repo.getConversation(p)).state).toBe("RETURNING_CHOICE");
   });
-  it("assunto sem relação: silêncio (nem a dica de botões é enviada)", async () => {
+  it("assunto sem relação: aviso descontraído (sem a dica de botões)", async () => {
     const { agent } = faqAgent({ kind: "off_topic" });
     const s = mk(agent); const p = s.phone(31);
     await done(s, p);
     const n = s.sentTo(p).length;
     await s.text(p, "vai chover hoje em São Paulo?"); s.advance(1000);
-    expect(s.sentTo(p).length).toBe(n);
+    expect(s.sentTo(p).length).toBe(n + 1); // aviso descontraído de "aqui é mentoria"
   });
   it("dúvida de conteúdo fora do fluxo: não é respondida (cai na dica de sempre)", async () => {
     const { agent } = faqAgent({ kind: "mentor_doubt" });
@@ -428,14 +428,14 @@ describe("nome e turma no cadastro", () => {
     await s.text(p, "Maria da Silva"); s.advance(1000); // IA sem certeza: vale a regra do bot (2+ palavras)
     expect((await s.repo.getConversation(p)).state).toBe("REG_FIELD_class_name");
   });
-  it("na confirmação, texto qualquer dá 1 dica e depois silêncio", async () => {
+  it("na confirmação, texto qualquer dá 1 dica, 1 aviso e depois nada se perde", async () => {
     const s = mk(); const p = s.phone(44);
     await upToName(s, p);
     await s.text(p, "Sofá"); s.advance(1000);
     const n = s.sentTo(p).length;
     await s.text(p, "talvez"); s.advance(1000);
     await s.text(p, "talvez"); s.advance(1000);
-    expect(s.sentTo(p).length).toBe(n + 1);
+    expect(s.sentTo(p).length).toBe(n + 2); // 1 dica + 1 aviso descontraído
   });
   it("judgeName do cliente: real=false com confiança vale; sem confiança, lixo ou erro => null", async () => {
     const j = (c: string, status = 200) => new GrokIntentAgent({ apiKey: "k", fetchImpl: grokReply(c, status) as unknown as typeof fetch }).judgeName("Zé do Frango");

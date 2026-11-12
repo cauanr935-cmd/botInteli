@@ -211,3 +211,14 @@ describe("certificado da mentoria (JSON rastreável)", () => {
     expect(r.status).toBe(401);
   });
 });
+
+describe("a mensagem de quem envia aparece na hora", () => {
+  it("a página desenha a mensagem local antes da resposta do servidor (texto, botão/lista, áudio, documento e admin)", async () => {
+    const { PAGE_HTML } = await import("../src/sim/page");
+    // o desenho local acontece dentro de run(), antes de esperar a promessa do servidor
+    expect(PAGE_HTML).toMatch(/function run\(promise, local\)[\s\S]*?if\(local\)\{ bubble\(local\)[\s\S]*?promise\(\)\.then/);
+    expect(PAGE_HTML).toMatch(/var shown = input\.kind === "text" \? mine\("text", input\.text\) : mine\("reply"/);
+    expect(PAGE_HTML).toMatch(/mine\("audio", "", \{localUrl: URL\.createObjectURL\(blob\)\}\)/);
+    expect(PAGE_HTML).toMatch(/aparece na hora/);
+  });
+});

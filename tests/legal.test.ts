@@ -81,3 +81,20 @@ describe("Termos de Uso e Política de Privacidade (LGPD)", () => {
     expect(toml).toMatch(new RegExp(`TERMS_VERSION = "${LEGAL_VERSION}"`));
   });
 });
+
+describe("o usuário consegue ver os termos", () => {
+  it("/termos, /privacidade e /lgpd abrem a página pública (200, sem login)", async () => {
+    for (const p of ["/termos", "/privacidade", "/lgpd"]) {
+      const res = await worker.fetch(new Request(`https://w.dev${p}`), {});
+      expect(res.status, p).toBe(200);
+      const html = await res.text();
+      expect(html).toMatch(/Termos de Uso/);
+      expect(html).toMatch(/Política de Privacidade/);
+      expect(html).toMatch(/id="direitos-lgpd"/);
+    }
+  });
+  it("o chat de teste mostra os três links para o usuário", async () => {
+    const { PAGE_HTML } = await import("../src/sim/page");
+    for (const href of ["/termos#termos", "/privacidade#privacidade-politica", "/lgpd#direitos-lgpd"]) expect(PAGE_HTML).toContain(`href="${href}"`);
+  });
+});

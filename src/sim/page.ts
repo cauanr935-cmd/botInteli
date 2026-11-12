@@ -35,6 +35,9 @@ export const PAGE_HTML = String.raw`<!doctype html>
   .opt:disabled{opacity:.45;cursor:default}
   .typing{align-self:flex-start;color:var(--sub);font-style:italic}
   .err{align-self:center;color:#c62828;font-size:13px}
+  .legal{text-align:center;font-size:12px;color:var(--sub);padding:4px 10px;background:var(--bg)}
+  .legal a{color:var(--sub);text-decoration:underline;margin:0 4px;white-space:nowrap}
+  .legal a:hover{color:var(--txt)}
   footer{display:flex;gap:8px;padding:8px 10px;background:var(--head)}
   footer input[type=text]{flex:1;border:0;border-radius:20px;padding:10px 14px;font:inherit;background:var(--in);color:var(--txt)}
   footer button{border:0;border-radius:50%;width:42px;height:42px;background:var(--btn);color:#fff;font-size:18px;cursor:pointer}
@@ -108,6 +111,7 @@ export const PAGE_HTML = String.raw`<!doctype html>
 <div id="pop"></div></header>
 <div id="adminbar" class="adminbar" style="display:none">Modo admin: você está no lugar do bot</div>
 <div id="feed"></div>
+<div class="legal"><a href="/termos#termos" target="_blank" rel="noopener">Termos de Uso</a>·<a href="/privacidade#privacidade-politica" target="_blank" rel="noopener">Política de Privacidade</a>·<a href="/lgpd#direitos-lgpd" target="_blank" rel="noopener">LGPD: seus direitos</a></div>
 <footer>
   <input id="txt" type="text" placeholder="Mensagem" autocomplete="off">
   <div id="recbar" role="status" aria-live="polite">
@@ -135,7 +139,7 @@ export const PAGE_HTML = String.raw`<!doctype html>
 
   function api(path, opts){
     opts = opts || {}; opts.headers = Object.assign({"X-Chat-Key": KEY}, ADMIN ? {"X-Chat-Admin": ADMIN} : {}, opts.headers || {});
-    return fetch(path, opts).then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+    return fetch(path, opts).then(function(r){ if(!r.ok) return r.json().catch(function(){ return {}; }).then(function(j){ throw new Error((j && j.error) ? j.error : "HTTP " + r.status); }); return r.json(); });
   }
   function hhmm(iso){ var d = new Date(iso); return d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}); }
   function scroll(){ feed.scrollTop = feed.scrollHeight; }
@@ -149,7 +153,8 @@ export const PAGE_HTML = String.raw`<!doctype html>
     }
     if(item.kind === "audio"){
       var a = document.createElement("audio"); a.controls = true;
-      fetch("/chat/api/media/" + item.mediaId, {headers:{"X-Chat-Key":KEY}}).then(function(r){return r.blob();})
+      if(item.localUrl){ a.src = item.localUrl; } // mensagem que acabei de enviar: toca direto do arquivo, sem esperar o servidor
+      else fetch("/chat/api/media/" + item.mediaId, {headers:{"X-Chat-Key":KEY}}).then(function(r){return r.blob();})
         .then(function(b){ a.src = URL.createObjectURL(b); });
       el.appendChild(a);
     } else {
@@ -204,32 +209,42 @@ export const PAGE_HTML = String.raw`<!doctype html>
   function closeSheet(){ document.getElementById("sheet").style.display = "none"; }
   document.getElementById("sheet").onclick = function(e){ if(e.target.id === "sheet") closeSheet(); };
 
-  function run(promise){
+  // A mensagem de quem enviou aparece NA HORA (antes da resposta do bot); quando a resposta chega, a tela é redesenhada pelo servidor.
+  function mine(kind, text, extra){
+    return Object.assign({id:"local-" + Date.now(), dir:"in", at:new Date().toISOString(), kind:kind, text:text}, extra || {});
+  }
+  function run(promise, local){
     if(busy) return; busy = true; lockOpts(true);
+    if(local){ bubble(local); scroll(); }
     var t = document.createElement("div"); t.className = "typing"; t.textContent = "digitando…"; feed.appendChild(t); scroll();
     promise().then(function(){ t.remove(); lastSig = ""; return refresh(); })
       .catch(function(e){ t.remove(); var d = document.createElement("div"); d.className = "err"; d.textContent = "Erro: " + e.message; feed.appendChild(d); scroll(); })
       .then(function(){ busy = false; lockOpts(false); });
   }
   function send(input){
-    run(function(){ return api("/chat/api/send", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(input)}); });
+    var shown = input.kind === "text" ? mine("text", input.text) : mine("reply", input.title || input.id);
+    run(function(){ return api("/chat/api/send", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(input)}); }, shown);
   }
   function sendAudio(blob){
     // Arquivo escolhido: segue o nome junto, para o servidor reconhecer o formato pela extensão quando o aparelho não informa o tipo.
     var type = (blob.type || "application/octet-stream");
     var hdr = {"Content-Type": type};
     if(blob.name) hdr["X-Filename"] = encodeURIComponent(blob.name);
-    run(function(){ return api("/chat/api/audio", {method:"POST", headers:hdr, body: blob}); });
+    run(function(){ return api("/chat/api/audio", {method:"POST", headers:hdr, body: blob}); }, mine("audio", "", {localUrl: URL.createObjectURL(blob)}));
   }
 
   function sendDoc(f){
     var type = (f.type || "application/octet-stream");
-    run(function(){ return api("/chat/api/document", {method:"POST", headers:{"Content-Type": type, "X-Filename": encodeURIComponent(f.name)}, body: f}); });
+    run(function(){ return api("/chat/api/document", {method:"POST", headers:{"Content-Type": type, "X-Filename": encodeURIComponent(f.name)}, body: f}); }, mine("text", "\uD83D\uDCC4 " + (f.name || "documento")));
   }
 
   function sendText(){
     var v = txt.value.trim(); if(!v || busy) return; txt.value = "";
-    if(ADMIN){ api("/chat/api/admin/reply", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({text:v})}).then(refresh).catch(showErr); return; }
+    if(ADMIN){
+      bubble({id:"local-" + Date.now(), dir:"out", by:"admin", at:new Date().toISOString(), kind:"text", text:v}); scroll(); // aparece na hora
+      api("/chat/api/admin/reply", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({text:v})}).then(function(){ lastSig = ""; return refresh(); }).catch(showErr);
+      return;
+    }
     send({kind:"text", text:v});
   }
   document.getElementById("send").onclick = sendText;

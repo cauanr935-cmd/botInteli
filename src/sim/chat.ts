@@ -4,6 +4,7 @@
 // Diferenças, só nas bordas: (1) a entrada vem desta página, não da Meta; (2) a "Graph API" de envio é
 // uma função local que captura o corpo da mensagem para exibir na tela, em vez de chamar a Meta.
 // Um único usuário de teste; o histórico fica no bucket R2 (chave chat-sim/history.json).
+import { defaultSensitiveMatcher } from "../axo/sensitive";
 import { loadConfig } from "../config";
 import { createAgent } from "../ai/grok";
 import { DeferredAudioAnalyzer, HttpAudioAnalyzer } from "../audio/analyzer";
@@ -57,6 +58,8 @@ export function recentLines(items: ChatItem[], max = 6): string[] {
   return items
     .map((i) => ({ who: i.dir === "in" ? "pessoa" : "atendimento", text: (i.ui?.body ?? i.text ?? "").replace(/\s+/g, " ").trim() }))
     .filter((l) => l.text !== "")
+    // Tema sensível nunca vai a provedor externo, nem como contexto de turnos seguintes.
+    .filter((l) => l.who !== "pessoa" || defaultSensitiveMatcher.detect(l.text) === null)
     .slice(-max)
     .map((l) => `${l.who}: ${l.text.slice(0, 200)}`);
 }
@@ -272,7 +275,8 @@ export async function handleChat(request: Request, deps: ChatDeps): Promise<Resp
   if (request.method === "GET" && path === "/chat/api/history") {
     if (isAdmin) {
       await touchPresence(bucket);
-      return json({ items: await readHistory(bucket), admin: true, botOn: !(await isBotOff(bucket)) });
+      const [items, off] = await Promise.all([readHistory(bucket), isBotOff(bucket)]); // juntas: uma viagem só
+      return json({ items, admin: true, botOn: !off });
     }
     return json({ items: await readHistory(bucket) });
   }
@@ -362,7 +366,9 @@ export async function handleChat(request: Request, deps: ChatDeps): Promise<Resp
   }
 
   // Bot desligado pelo admin, mas o admin sumiu (fechou a tela sem religar): o bot volta sozinho.
-  let botOff = await isBotOff(bucket);
+  // Leitura do histórico (contexto para a IA) junto com o estado do bot: não depende de nada que vem depois.
+  const [botOffNow, historyForContext] = await Promise.all([isBotOff(bucket), readHistory(bucket)]);
+  let botOff = botOffNow;
   if (botOff && !isAdmin && !(await isAdminOnline(bucket))) {
     const back = await turnBotOn(bucket, cfg.supabaseUrl, cfg.supabaseServiceKey);
     if (!back.ok) logger.log("warn", "chat_handback_failed", { error: back.error });
@@ -450,7 +456,7 @@ export async function handleChat(request: Request, deps: ChatDeps): Promise<Resp
     content = new ContentProvider(repo, logger);
     contentProviders.set(cfg.supabaseUrl, content);
   }
-  const recentContext = recentLines(await readHistory(bucket));
+  const recentContext = recentLines(historyForContext);
   const onEvent = createEventHandler(cfg, {
     repo, logger, content, fetchImpl: graph as unknown as typeof fetch,
     ...(recentContext.length ? { recentContext } : {}),

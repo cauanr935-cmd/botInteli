@@ -68,6 +68,7 @@ export function createEventHandler(cfg: Config, p: EventHandlerPorts): EventHand
       maxPerDay: cfg.maxBotMsgsPerUserPerDay,
       maxPer10Min: cfg.maxBotMsgsPerUserPer10Min,
       ...(p.now ? { now: p.now } : {}),
+      mentoria: { timezone: cfg.metaAccountTimezone, ...(a ? { store: a.store } : {}) },
       registration: {
         ...(cfg.whatsappFlowId ? { flowId: cfg.whatsappFlowId } : {}),
         privacyUrl: cfg.privacyPolicyUrl, termsVersion: cfg.termsVersion,

@@ -43,7 +43,7 @@ Contexto: a Meta dá **1.000 mensagens de serviço grátis por número comercial
 ### R2 — Anti-spam e economia de mensagens
 
 - O bot só responde quando a mensagem da pessoa é uma **entrada esperada no estado atual da conversa**. Isso inclui variações: maiúsculas, acentos, letras repetidas ("oiii"), pontuação e sinônimos.
-- Entrada inesperada: **no máximo 1 dica por estado**. Depois disso, **silêncio** até chegar uma entrada válida.
+- Entrada inesperada: **no máximo 1 dica por estado**. Depois disso, **nunca silêncio de cara**: o Axo manda um aviso curto e descontraído ("aqui não é lugar de resenha…", tom de estudante universitário, mesmo registro da pessoa) usando as vagas que sobram dos limites por pessoa. A **última vaga é sempre a despedida** ("vou ficar na minha…"), então o silêncio que vem depois nunca surpreende. Só depois disso, silêncio até chegar uma entrada válida. O aviso sempre relê os envios recentes antes de sair (rajadas simultâneas não multiplicam avisos) e nunca ultrapassa os limites do R2 nem o orçamento do R1. Código: `offTopicNotice` em `src/axo/voice.ts` e `sendOffTopic` em `src/conversation/engine.ts`.
 - Repetição não gera resposta. Exemplo: "oi" depois que as boas-vindas já foram enviadas → **silêncio**.
 - Limites por pessoa: `MAX_BOT_MSGS_PER_USER_PER_DAY` (padrão **12**) e `MAX_BOT_MSGS_PER_USER_PER_10MIN` (padrão **4**). Acima disso, silêncio.
 - O mesmo `wamid` (ID da mensagem) recebido duas vezes é ignorado (idempotência; a Meta reenvia webhooks).

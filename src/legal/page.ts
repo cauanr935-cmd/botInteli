@@ -81,7 +81,7 @@ const BODY = `
 <p>Esta política explica, conforme a Lei Geral de Proteção de Dados (Lei nº 13.709/2018, “<b>LGPD</b>”), quais dados tratamos, por quê, com quem os compartilhamos e como você exerce seus direitos.</p>
 
 <h3>1. Controlador</h3>
-<p>O controlador dos dados é <b>{{controllerName}}</b> (CNPJ/CPF {{controllerDoc}}), {{controllerAddress}}. Canais: e-mail <b>{{contactEmail}}</b> ou WhatsApp <a href="{{whatsappLink}}"><b>{{whatsapp}}</b></a> (Cauã, um dos fundadores).</p>
+<p>O controlador dos dados é <b>{{controllerName}}</b> (CNPJ/CPF {{controllerDoc}}), {{controllerAddress}}. Canais: e-mail <b>{{contactEmail}}</b> ou WhatsApp <a href="{{whatsappLink}}"><b>{{whatsapp}}</b></a> (Cauan, um dos fundadores, junto com o Bruno).</p>
 
 <h3>2. Encarregado (DPO)</h3>
 <p>Encarregado pelo tratamento de dados pessoais (art. 41): <b>{{dpo}}</b>. Ele recebe seus pedidos e reclamações e conversa com a ANPD.</p>
@@ -133,7 +133,7 @@ const BODY = `
 <h3>9. Crianças e adolescentes</h3>
 <p>O serviço não é destinado a menores de 18 anos. Se soubermos que tratamos dados de menor sem o consentimento de um responsável, eliminaremos esses dados (art. 14).</p>
 
-<h3>10. Seus direitos e como exercê-los</h3>
+<h3 id="direitos-lgpd">10. Seus direitos e como exercê-los</h3>
 <p>Nos termos do art. 18, você pode pedir, a qualquer momento e gratuitamente: <b>confirmação</b> de que tratamos seus dados; <b>acesso</b>; <b>correção</b> de dados incompletos, inexatos ou desatualizados; <b>anonimização, bloqueio ou eliminação</b> de dados desnecessários, excessivos ou tratados em desconformidade; <b>portabilidade</b>; <b>eliminação</b> dos dados tratados com consentimento; <b>informação</b> sobre com quem compartilhamos; <b>informação sobre a possibilidade de não consentir</b> e suas consequências; e <b>revogação do consentimento</b> (art. 8º, § 5º). Você também pode se <b>opor</b> a tratamentos feitos sem consentimento, se houver descumprimento da lei.</p>
 <ul>
 <li><b>Como pedir</b>: pelo e-mail <b>{{contactEmail}}</b> ou pelo WhatsApp <a href="{{whatsappLink}}">{{whatsapp}}</a>, informando o número com o qual você usa o bot. Podemos pedir uma confirmação de identidade.</li>
@@ -206,7 +206,7 @@ export function renderLegalPage(info: LegalInfo = LEGAL_INFO): string {
 <h1>Termos de Uso e Política de Privacidade — Be My Mentor</h1>
 <p class="meta">Versão ${LEGAL_VERSION} · atualizada em ${LEGAL_UPDATED}</p>
 ${banner}
-<nav><a href="#termos">Termos de Uso</a><a href="#privacidade-politica">Política de Privacidade</a></nav>
+<nav><a href="#termos">Termos de Uso</a><a href="#privacidade-politica">Política de Privacidade</a><a href="#direitos-lgpd">Seus direitos (LGPD)</a></nav>
 ${body}
 </main>
 </body>
@@ -224,4 +224,43 @@ export function legalResponse(info: LegalInfo = LEGAL_INFO): Response {
       "Referrer-Policy": "no-referrer",
     },
   });
+}
+
+export interface LegalSection {
+  /** "termos" (Parte A) ou "privacidade" (Parte B, inclui os direitos da LGPD). */
+  part: "termos" | "privacidade";
+  title: string;
+  text: string;
+}
+
+const decode = (s: string): string =>
+  s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&nbsp;/g, " ");
+
+/**
+ * Os Termos de Uso e a Política de Privacidade em seções de texto simples (sem HTML): é a base (RAG) que o bot consulta
+ * para responder perguntas sobre os termos. Sai do MESMO texto da página pública, então bot e página nunca divergem.
+ */
+export function legalSections(info: LegalInfo = LEGAL_INFO): LegalSection[] {
+  const fill = (k: keyof LegalInfo): string => (info[k].trim() === "" ? "" : info[k].trim());
+  const body = BODY
+    .replace(/\{\{controllerName\}\}/g, fill("controllerName")).replace(/\{\{controllerDoc\}\}/g, fill("controllerDoc"))
+    .replace(/\{\{controllerAddress\}\}/g, fill("controllerAddress")).replace(/\{\{contactEmail\}\}/g, fill("contactEmail"))
+    .replace(/\{\{dpo\}\}/g, fill("dpo")).replace(/\{\{forum\}\}/g, fill("forum"))
+    .replace(/\{\{whatsappLink\}\}/g, CONTACT_WHATSAPP_LINK).replace(/\{\{whatsapp\}\}/g, CONTACT_WHATSAPP)
+    .replace(/\{\{version\}\}/g, LEGAL_VERSION).replace(/\{\{updated\}\}/g, LEGAL_UPDATED);
+  const split = body.indexOf('<h2 id="privacidade-politica">');
+  const out: LegalSection[] = [];
+  const add = (part: LegalSection["part"], html: string): void => {
+    const parts = html.split(/<h3[^>]*>/);
+    for (const chunk of parts.slice(1)) {
+      const [titleHtml, ...rest] = chunk.split("</h3>");
+      const text = decode(
+        rest.join("").replace(/<\/tr>/g, "\n").replace(/<\/(td|th)>/g, " — ").replace(/<\/li>|<\/p>/g, "\n").replace(/<[^>]+>/g, " "),
+      ).replace(/[ \t]+/g, " ").replace(/ — \n/g, "\n").replace(/\n\s*/g, "\n").trim();
+      out.push({ part, title: decode((titleHtml ?? "").replace(/<[^>]+>/g, "")).trim(), text });
+    }
+  };
+  add("termos", body.slice(0, split < 0 ? body.length : split));
+  if (split >= 0) add("privacidade", body.slice(split));
+  return out;
 }

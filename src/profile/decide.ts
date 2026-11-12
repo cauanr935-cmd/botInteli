@@ -1,5 +1,6 @@
 // Decisão (PURA) do que vem depois do áudio de perfil: papel -> áreas (mentor) -> dúvida (mentorado) -> encerramento.
 // Também cuida de quem já é cadastrado e volta a falar ("Qual a sua dúvida principal?").
+import { isVent, ventNudgeIntro } from "../axo/voice";
 import { finish, moveTo, type Counters, type Decision, type UserState } from "../conversation/machine";
 import { intentsOf, type Intent } from "../conversation/synonyms";
 import { normalizeText } from "../conversation/normalize";
@@ -14,6 +15,7 @@ import {
   categoryFromRowId, classifyDoubt, parseCategories,
 } from "./categories";
 import { MENU_BUTTON_ID, MENU_FALLBACKS } from "../services/menu";
+import { legalAnswer } from "../rag/legal-faq";
 import { startSchedule } from "../schedule/decide";
 import {
   DOUBT_NO_ID, DOUBT_YES_ID, PROFILE_TEXTS as T, RET_AREAS_ID, RET_DOUBT_ID, ROLE_BUTTON_BOTH, ROLE_BUTTON_MENTOR,
@@ -55,7 +57,7 @@ export function categoriesListReply(selected: readonly string[] = [], c: Content
   const body = current && chosen.length > 0
     ? `${T.areasCurrent} ${chosen.map((x) => x.label).join(", ")}. Quer incluir mais alguma área? Escolha na lista ou toque em Concluir.`
     : chosen.length === 0
-    ? `Em quais áreas você topa ajudar? Escolha uma área de cada vez na lista; quando terminar, toque em Concluir.\n\n${ACADEMIC_LIFE_EXPLANATION}`
+    ? `Em quais áreas você topa ajudar? Escreva todas de uma vez (ex.: computação, design e liderança, ou "todas") ou escolha uma de cada vez na lista e toque em Concluir.\n\n${ACADEMIC_LIFE_EXPLANATION}`
     : `Adicionado: ${chosen.map((x) => x.label).join(", ")}. Quer incluir mais alguma área? Escolha na lista ou toque em Concluir.`;
   const rows = CATEGORIES.filter((x) => !selected.includes(x.key)).map((x) => ({
     id: `${CATEGORY_ROW_PREFIX}${x.key}`, title: x.label, description: CATEGORY_DESCRIPTIONS[x.key] ?? "",
@@ -64,12 +66,57 @@ export function categoriesListReply(selected: readonly string[] = [], c: Content
   return buildList(body, c.text("profileCategoriesButton", T.categoriesButton, 20), c.text("profileCategoriesSection", T.categoriesSection, 24), rows);
 }
 /** "O que você quer fazer?" para quem já é cadastrado e volta a falar (não presume que há uma dúvida). */
-export function returningChoiceReply(c: Content = fallbackContent): Reply {
-  return buildButtons(c.text("profileAskReturning", T.askReturning), [
+export function returningChoiceReply(c: Content = fallbackContent, intro = ""): Reply {
+  return buildButtons(`${intro}${c.text("profileAskReturning", T.askReturning)}`.slice(0, 1024), [
     { id: RET_DOUBT_ID, title: c.text("profileReturningDoubt", T.returningDoubt, 20) },
     { id: RET_AREAS_ID, title: c.text("profileReturningAreas", T.returningAreas, 20) },
     { id: MENU_BUTTON_ID, title: c.text("profileReturningMenu", T.returningMenu || MENU_FALLBACKS.menuButtonLabel, 20) },
   ]);
+}
+
+/** Agradecimento ou despedida: não pede resposta (silêncio, sem gastar mensagem). */
+export function isCourtesy(raw: string): boolean {
+  const t = normalizeText(raw);
+  return /^(muito )?(obrigad[oa]s?|brigad[oa]|valeu|vlw|tchau|flw|falou|ate (mais|logo|breve|a proxima)|blz|beleza|show|top|legal|entendi|certo|perfeito|massa|tmj|de nada)( .{0,12})?$/.test(t);
+}
+
+/**
+ * Texto livre de quem já concluiu o cadastro e escreve algo fora das opções.
+ * - agradecimento/despedida: silêncio;
+ * - pedido de ajuda numa área conhecida (ex.: "me ajuda em cálculo"): vira a dúvida e segue para registrar a mentoria;
+ * - qualquer outra coisa: `null` (a IA, se houver, tenta; senão o motor chama `nudgeToMentoring`).
+ */
+function freeTextAfterCompletion(
+  user: UserState, input: IncomingMessage, counters: Counters, now: Date, c: Content, profile: Parameters<typeof decideProfile>[5],
+): ProfileDecision | null {
+  if (input.type !== "text") return null;
+  if (isCourtesy(input.body)) return { replies: [], nextState: user, outcome: "silent" };
+  if (offersToMentor(input.body)) return null;
+  const doubt = validDoubt(input.body);
+  if (doubt === null || isNoDoubt(input.body) || classifyDoubt(doubt).length === 0) return null;
+  // Mesma lógica de quem digita a dúvida depois de "Tirar dúvida" (registra e pede os horários).
+  const d = decideProfile({ ...user, state: "DOUBT_TEXT", hintSentInState: false }, input, counters, now, c, profile);
+  if (!d || d.outcome === "limited") return d ? { replies: [], nextState: user, outcome: "limited" } : null;
+  return d;
+}
+
+/** Pessoa quer ENSINAR ("dar mentoria", "ser mentor", "ensinar"): vai para a escolha de áreas, não para o registro de dúvida. */
+function offersToMentor(raw: string): boolean {
+  const t = normalizeText(raw);
+  return /\b(dar|oferecer|ofereco|ministrar|fazer)\b.*\bmentoria/.test(t) || /\bser (um |uma )?mentor/.test(t) || /\b(quero|posso|gostaria de) (ensinar|ajudar (os|as|outros|outras|alunos|colegas))\b/.test(t);
+}
+
+/** Pedido de ajuda numa área conhecida ("me ajuda em cálculo"): vai para o registro de mentoria, não para a busca de FAQ. */
+export function isMentoringRequest(raw: string): boolean {
+  if (offersToMentor(raw)) return false; // "quero dar mentoria de computação" é oferta, não dúvida
+  const d = validDoubt(raw);
+  return d !== null && !isNoDoubt(raw) && classifyDoubt(d).length > 0 && legalAnswer(raw) === null;
+}
+
+/** Fim da conversa sem entender o texto: em vez de calar, volta ao assunto (mentoria) com as 3 opções. */
+export function nudgeToMentoring(user: UserState, counters: Counters, now: Date, c: Content = fallbackContent, said = ""): Decision {
+  const intro = said && isVent(said) ? ventNudgeIntro(said) : c.text("profileNudgeMentoring", T.nudgeMentoring);
+  return finish(user, moveTo(user, "RETURNING_CHOICE", now), [returningChoiceReply(c, `${intro} `)], counters, "reply");
 }
 
 /** "não tenho dúvida", "nenhuma dúvida agora", "sem dúvidas"... (texto digitado no lugar de uma dúvida). */
@@ -155,8 +202,10 @@ export function decideProfile(
   // Quem já concluiu e volta a falar: pergunta o que quer fazer (não presume que há uma dúvida).
   if (user.state === "COMPLETED") {
     if (input.type === "text" && intents.has("greeting")) {
-      return finish(user, moveTo(user, "RETURNING_CHOICE", now), [returningChoiceReply(c)], counters, "reply");
+      return finish(user, moveTo(user, "RETURNING_CHOICE", now), [returningChoiceReply(c, `${c.text("profileGreetBack", T.greetBack)} `)], counters, "reply");
     }
+    const free = freeTextAfterCompletion(user, input, counters, now, c, profile);
+    if (free) return free;
     if (input.type === "button_reply" && input.id === RET_DOUBT_ID) return startDoubt();
     if (input.type === "button_reply" && input.id === RET_AREAS_ID) return startAreasChange();
     if (input.type === "button_reply" && input.id === MENU_BUTTON_ID) return openMenu();
@@ -176,6 +225,8 @@ export function decideProfile(
     if (input.type !== "text") return silent();
     if (intents.has("menu")) return openMenu();
     if (intents.has("greeting")) return silent(); // a pergunta já está na tela: repetição = silêncio (R2)
+    const free = freeTextAfterCompletion(user, input, counters, now, c, profile);
+    if (free) return free;
     return hintOnce(c.text("profileHintReturning", T.hintReturning));
   }
 

@@ -139,6 +139,10 @@ export class Simulator {
   audio(from: string) {
     return this.message(from, { type: "audio", audio: { id: "MEDIA1", mime_type: "audio/ogg; codecs=opus", voice: true } });
   }
+  /** Contato compartilhado (anexo > Contato): cada item vira um telefone do contato. */
+  contacts(from: string, phones: { wa_id?: string; phone?: string }[]) {
+    return this.message(from, { type: "contacts", contacts: phones.map((ph) => ({ name: { formatted_name: "Fulano" }, phones: [ph] })) });
+  }
   sticker(from: string) { return this.message(from, { type: "sticker", sticker: { id: "S1", mime_type: "image/webp" } }); }
   /** Status webhook de uma mensagem nossa, com pricing. */
   status(wamid: string, pricing: Record<string, unknown>) {

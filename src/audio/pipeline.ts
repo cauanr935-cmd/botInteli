@@ -7,14 +7,12 @@ import { REPLIES, type Reply } from "../conversation/texts";
 import { hashWaId } from "../lib/hash";
 import { maskPhone, type Logger } from "../lib/logger";
 import { fallbackContent, type Content } from "../services/content";
-import { MENU_BUTTON_ID, MENU_FALLBACKS } from "../services/menu";
-import { buildButtons, LIMITS } from "../whatsapp/builders";
 import type { MediaClient, MediaInfo, OutboundMessage, SendResult } from "../whatsapp/client";
 import type { AudioEvent } from "../whatsapp/types";
 import type { AudioAnalyzer } from "./analyzer";
 import { roleReply } from "../profile/decide";
 import { PROFILE_TEXTS } from "../profile/texts";
-import { MENTORIA_SAVED_TEXT } from "../mentoria/texts";
+import { roleQuestion } from "../mentoria/decide";
 import { audioKey, canonicalAudioMime, isAllowedAudioMime, type AudioStore } from "./storage";
 
 /** A URL da mídia expira em 5 minutos; com 30 s de folga, pedimos outra antes de baixar. */
@@ -75,7 +73,8 @@ export async function processAudio(
     const stored = await deps.repo.getConversation(msg.from);
     if (stored.state !== "PROCESSING_AUDIO") break; // ex.: "sair" durante o processamento: não responde
     const won = await deps.repo.saveConversation(msg.from, stored.version, {
-      state: purpose === "profile" ? (isHint ? "REG_PROFILE_AUDIO" : "PROFILE_ROLE") : "AWAIT_AUDIO",
+      // Áudio de mentoria guardado: a pessoa descreve a mentoria (papel -> assunto -> data -> parceiro).
+      state: purpose === "profile" ? (isHint ? "REG_PROFILE_AUDIO" : "PROFILE_ROLE") : (isHint ? "AWAIT_AUDIO" : "MENT_ROLE"),
       previousState: null, optedOutAt: null,
       hintSentInState: isHint ? hintAlreadySent || sendHint : false,
     });
@@ -104,10 +103,7 @@ export async function processAudio(
   if (result.kind === "ok" && purpose === "profile") {
     reply = roleReply(content); // áudio de perfil guardado: a próxima pergunta é o papel
   } else if (result.kind === "ok") {
-    const body = result.text.trim() === "" ? content.text("audioResultFallback", "Análise concluída.") : result.text;
-    reply = buildButtons(body.length > LIMITS.body ? `${body.slice(0, LIMITS.body - 1)}…` : body, [
-      { id: MENU_BUTTON_ID, title: content.text("menuButtonLabel", MENU_FALLBACKS.menuButtonLabel, 20) },
-    ]);
+    reply = roleQuestion(); // mentoria: a primeira pergunta (a resposta única a este arquivo)
   } else {
     reply = purpose === "profile"
       ? { type: "text", text: { body: content.text("audioProfileFailed", PROFILE_TEXTS.audioProfileFailed) } }
@@ -173,15 +169,20 @@ async function run(msg: AudioEvent, content: Content, deps: AudioPipelineDeps, p
   const id = (deps.uuid ?? (() => crypto.randomUUID()))();
   const key = audioKey(waIdHash, clock(), deps.timezone, id, mime);
   await deps.store.put(key, dl.bytes, mime);
-  // Áudio do serviço "Registrar mentoria": só o arquivo (sem assunto nem parceiro). "Mentoria" marca o registro no painel/API.
-  const mentoria = purpose === "profile" ? undefined : { subject: "Mentoria" };
+  // Mentoria: só o arquivo por enquanto (assunto, data e parceiro vêm da conversa; a mentoria só fica completa depois).
   const serviceId = purpose === "profile" ? "perfil" : "mentoria";
   try {
     await deps.repo.insertAudio({
-      id, waIdHash, r2Key: key, mime, bytes: dl.bytes.length, serviceId, ...(mentoria ? { mentoria } : {}),
+      id, waIdHash, r2Key: key, mime, bytes: dl.bytes.length, serviceId,
       status: "processing", result: null, createdAt: clock(), finishedAt: null,
     });
+    // O rascunho aponta para este arquivo; recomeça limpo (um rascunho velho não se mistura com o novo).
+    if (purpose !== "profile") {
+      await deps.repo.saveMentoriaDraft(msg.from, null);
+      await deps.repo.saveMentoriaDraft(msg.from, { audioId: id });
+    }
   } catch (e) {
+    await deps.repo.discardIncompleteMentoria(id).catch(() => undefined);
     await deps.store.delete(key).catch(() => undefined); // não deixa arquivo órfão sem registro
     throw e;
   }
@@ -192,15 +193,7 @@ async function run(msg: AudioEvent, content: Content, deps: AudioPipelineDeps, p
     return { kind: "ok", text: "" };
   }
 
-  try {
-    const res = await deps.analyzer.analyze({ bytes: dl.bytes, mime });
-    await deps.repo.finishAudio(id, "done", res.raw, clock());
-    // Analisador síncrono: o resultado já é a análise. Deferido: fica pendente até o sistema externo devolver pela API.
-    if (mentoria && !deps.analyzer.deferred) await deps.repo.setAnalysisResult(id, res.raw, clock()).catch(() => undefined);
-    return { kind: "ok", text: mentoria && deps.analyzer.deferred ? MENTORIA_SAVED_TEXT : res.text };
-  } catch (e) {
-    deps.logger.log("warn", "analyzer_failed", { from, error: e instanceof Error ? e.message : "unknown" });
-    await deps.repo.finishAudio(id, "failed", null, clock()).catch(() => undefined);
-    return { kind: "failed" };
-  }
+  // R6: a análise (API externa) só acontece depois de o parceiro confirmar, e é feita pelo notebook via /api/v1.
+  // Por isso o analisador síncrono NÃO é chamado aqui: a voz do parceiro está na gravação.
+  return { kind: "ok", text: "" };
 }

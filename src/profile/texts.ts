@@ -31,6 +31,8 @@ export const PROFILE_TEXTS = {
   returningDoubt: "Tirar dúvida",
   returningAreas: "Mudar áreas",
   returningMenu: "Menu",
+  greetBack: "Olá! Que bom te ver de novo.",
+  nudgeMentoring: "Por aqui eu cuido das mentorias, e posso te ajudar com isso.",
   hintReturning: "Toque em *Tirar dúvida*, *Mudar áreas* ou *Menu* na mensagem acima.",
   areasCurrent: "Suas áreas hoje:",
   askMainDoubt: "Qual a sua dúvida principal?",
@@ -40,8 +42,9 @@ export const PROFILE_TEXTS = {
   closingDoubt:
     "Dúvida registrada! Vamos usá-la para encontrar o melhor mentor para você. Se tiver documentos para o seu mentor ver antes da mentoria, é só anexar aqui. Para registrar uma mentoria, envie *menu*. Até a próxima!",
   doubtRegisteredIntro: "Dúvida registrada! Agora, só para encerrar:",
-  hintScheduleDays: "Para escolher, toque em *Escolher dias* na mensagem acima e, quando terminar, em *Terminei*.",
-  hintScheduleHours: "Para escolher, toque em *Escolher horários* na mensagem acima e, quando terminar, em *Concluir*.",
+  scheduleTypeHint: "Escreva tudo de uma vez, por exemplo: segunda e quarta das 8h às 12h; sexta à tarde.",
+  hintScheduleDays: "Entendi! Me diz só quando você pode, tipo \"segunda e quarta de manhã\" ou \"sexta das 14h às 16h\". Se preferir, toque em *Escolher dias*.",
+  hintScheduleHours: "Beleza! Me diz o horário, tipo \"de manhã\" ou \"das 14h às 16h\". Se preferir, toque em *Escolher horários*.",
   closingScheduleDoubt:
     "Obrigado! Vamos usar a sua dúvida e os seus horários para encontrar o melhor mentor para você. Se tiver documentos para o seu mentor ver antes da mentoria, é só anexar aqui. Para registrar uma mentoria, envie *menu*. Até a próxima!",
   audioProfileFailed: "Não consegui usar esse áudio. Envie o áudio de novo, por favor.",

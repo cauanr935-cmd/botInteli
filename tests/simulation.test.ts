@@ -24,9 +24,9 @@ describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
   it("C8.1 S3: cadastro com Flow, áudio de apresentação, menu explícito e uso de serviço", async () => {
     const m = await runS3();
     expect(m.newPerson).toBe(10); // 7 do cadastro + menu + serviço + resposta do áudio
-    expect(m.extraAudio).toBe(1);
-    expect(m.returning).toBe(3);
-    expect(m.audiosStored).toBe(4); // inclui o áudio de perfil
+    expect(m.extraAudio).toBe(0); // mentoria em andamento (falta descrevê-la): outro áudio = silêncio
+    expect(m.returning).toBe(1); // "oi" no dia seguinte reapresenta a pergunta pendente; o resto é silêncio
+    expect(m.audiosStored).toBe(2); // perfil + o arquivo da mentoria em andamento
     expect(m.allWebhooks200).toBe(true);
   });
 

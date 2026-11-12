@@ -63,3 +63,10 @@ Página pública em `GET /privacidade` (e `/termos`), texto em `src/legal/page.t
 - [ ] Decidir sobre menores de 18 anos (a política exige consentimento de responsável) e se o bot deve perguntar a idade.
 - [ ] Quem aceitou antes (versão `2025-01`) não aceitou esta versão: avaliar pedir novo aceite.
 - [ ] Criar o procedimento interno para atender pedidos de acesso/correção/eliminação (hoje não há comando no bot; o pedido é manual, pelo e-mail ou WhatsApp).
+
+## 2026-11-10 — Mentoria v2 (integração com o Transcritor)
+- [ ] Aplicar `supabase/migrations/0015_mentoria_v2.sql` no Supabase e fazer o deploy (comandos em `docs/DEPLOY.md`, seção "Mentoria v2"). **Antes de subir o código**, senão o fluxo novo falha ao gravar a data e o parceiro.
+- [ ] Decidir se mostrar o nome de até 3 cadastrados na busca de parceiro por nome é aceitável para a política de privacidade (hoje: só para quem já se cadastrou, mínimo de 4 letras).
+- [ ] Avisar quem usa o bot: o registro de mentoria agora pergunta papel, assunto, data e parceiro depois do arquivo; o parceiro precisa estar cadastrado (aceite LGPD) para confirmar.
+- [ ] **Eliminação (LGPD art. 18)**: o contrato prevê que o bot repasse o `pessoa_id` ao notebook para apagar nome, matrícula e sal. Fora do escopo das 6 etapas da v2: precisa de um comando/rota e de um procedimento.
+- [ ] Ambiente de desenvolvimento: existe um `.dev.vars` real na pasta do projeto e o teste C0.6 (`tests/repo-hygiene.test.ts`) exige que ele não exista. É um arquivo seu (ignorado pelo git); o teste falha só por isso, não por código. Mova o arquivo para fora da pasta ao rodar `npm run verify`, ou ajuste o teste.

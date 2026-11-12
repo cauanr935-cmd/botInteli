@@ -179,7 +179,7 @@ describe("C5.3 escolha na lista", () => {
     await s.feed(text("blablabla"));
     await s.feed(text("blablabla2"));
     await s.feed({ type: "unsupported", wamid: `s${++seq}`, from: WA, rawType: "sticker" });
-    expect(s.graph).toHaveBeenCalledTimes(1);
+    expect(s.graph).toHaveBeenCalledTimes(2); // dica + aviso; figurinha segue em silêncio
   });
   it("C5.3 áudio escolhido: texto 'menu' em AWAIT_AUDIO volta ao menu (lista, 1 mensagem)", async () => {
     const s = setup({ services });

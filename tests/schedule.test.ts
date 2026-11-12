@@ -103,10 +103,10 @@ describe("dias e horários em listas", () => {
     await pick(s, p, "sch_done");
     await pick(s, p, "sch_h_8_10"); // linha de outra lista
     expect(s.sentTo(p).length).toBe(n);
-    await s.text(p, "segunda de manhã"); s.advance(1000);
+    await s.text(p, "blablabla"); s.advance(1000);
     expect(bodyOf(s, p)).toBe(T.hintScheduleDays);
-    await s.text(p, "segunda de manhã"); s.advance(1000);
-    expect(s.sentTo(p).length).toBe(n + 1);
+    await s.text(p, "blablabla"); s.advance(1000);
+    expect(s.sentTo(p).length).toBe(n + 2); // dica + aviso descontraído
   });
 
   it("mentor e mentorado ('os dois'): informa horários uma vez e depois vai à dúvida, sem perguntar horário de novo", async () => {
@@ -157,3 +157,111 @@ describe("dias e horários em listas", () => {
     expect(() => hoursReply("sabado", [{ day: "sabado", start: "10:00", end: "12:00" }])).not.toThrow();
   });
 });
+
+describe("vários dias e horários escritos de uma vez", () => {
+  it("parseScheduleText entende dias, intervalos, períodos e horas quebradas", async () => {
+    const { parseScheduleText: parse } = await import("../src/schedule/parse");
+    const sl = (t: string) => parse(t).slots.map((x) => `${x.day} ${x.start}-${x.end}`);
+    expect(sl("segunda e quarta das 8h às 12h; sexta à tarde")).toEqual(["segunda 08:00-12:00", "quarta 08:00-12:00", "sexta 12:00-18:00"]);
+    expect(sl("de segunda a sexta, 14h às 18h")).toHaveLength(5);
+    expect(sl("seg, qua e sex de manhã e terça à tarde")).toEqual(["segunda 08:00-12:00", "terca 12:00-18:00", "quarta 08:00-12:00", "sexta 08:00-12:00"]);
+    expect(sl("todos os dias das 9 as 11")).toHaveLength(7);
+    expect(sl("fim de semana o dia todo")).toEqual(["sabado 08:00-20:00", "domingo 08:00-20:00"]);
+    expect(sl("sábado 8:30-11:30")).toEqual(["sabado 08:30-11:30"]); // meia hora é respeitada
+    expect(sl("sexta das 15h às 16h30")).toEqual(["sexta 15:00-16:30"]);
+    expect(sl("sexta 8h10 às 11h40")).toEqual(["sexta 08:00-12:00"]); // outros minutos arredondam para fora, em passos de 30
+    expect(sl("terça 2 as 5")).toEqual(["terca 14:00-17:00"]);
+    expect(sl("das 8 às 12 na segunda e quarta")).toEqual(["segunda 08:00-12:00", "quarta 08:00-12:00"]);
+    expect(sl("segunda das 6h às 23h")).toEqual(["segunda 08:00-20:00"]); // limitado ao expediente
+    expect(parse("das 14h às 16h").loose).toEqual([[840, 960]]);
+    expect(parse("segunda e terça").daysOnly).toEqual(["segunda", "terca"]);
+    expect(sl("amanhã posso ter tempo")).toEqual([]);
+  });
+
+  it("na lista de dias: um texto só anota vários dias e horários e mostra 'Anotado' com Terminei", async () => {
+    const s = mk(); const p = s.phone(20);
+    await toMentorSchedule(s, p);
+    const n = s.sentTo(p).length;
+    await s.text(p, "segunda e quarta das 8h às 12h; sexta à tarde"); s.advance(1000);
+    expect(s.sentTo(p).length).toBe(n + 1); // 1 resposta para tudo
+    expect(bodyOf(s, p)).toMatch(/Anotado:\n• Segunda: 8h às 12h\n• Quarta: 8h às 12h\n• Sexta: 12h às 18h/);
+    expect(rowIds(s, p)).toContain("sch_done");
+    expect(rowIds(s, p)).toContain("sch_reset");
+    expect(rowIds(s, p)).not.toContain("sch_day_segunda");
+    expect((await slotsOf(s, p))).toHaveLength(3);
+    await pick(s, p, "sch_done");
+    expect(bodyOf(s, p)).toContain(T.closingMentor);
+    expect((await s.repo.getConversation(p)).state).toBe("COMPLETED");
+  });
+
+  it("escrito soma ao que já foi escolhido na lista; 'Refazer tudo' recomeça do zero", async () => {
+    const s = mk(); const p = s.phone(21);
+    await toMentorSchedule(s, p);
+    await pick(s, p, "sch_day_segunda"); await pick(s, p, "sch_h_8_10"); await pick(s, p, "sch_dayend");
+    await s.text(p, "segunda das 10h às 12h e terça de manhã"); s.advance(1000);
+    expect(await slotsOf(s, p)).toEqual([{ day: "segunda", start: "08:00", end: "12:00" }, { day: "terca", start: "08:00", end: "12:00" }]);
+    await pick(s, p, "sch_reset");
+    expect(await slotsOf(s, p)).toEqual([]);
+    expect(rowIds(s, p)).toHaveLength(7);
+  });
+
+  it("dentro de um dia: vários horários escritos de uma vez e volta à lista de dias", async () => {
+    const s = mk(); const p = s.phone(22);
+    await toMentorSchedule(s, p);
+    await pick(s, p, "sch_day_quinta");
+    await s.text(p, "8h às 10h e 14h às 18h"); s.advance(1000);
+    expect(await slotsOf(s, p)).toEqual([{ day: "quinta", start: "08:00", end: "10:00" }, { day: "quinta", start: "14:00", end: "18:00" }]);
+    expect((await s.repo.getConversation(p)).state).toBe("SCHED_DAYS_mentor");
+  });
+
+  it("só dias, sem horário: 1 dica pedindo os dois juntos", async () => {
+    const s = mk(); const p = s.phone(23);
+    await toMentorSchedule(s, p);
+    await s.text(p, "segunda e terça"); s.advance(1000);
+    expect(bodyOf(s, p)).toBe(T.hintScheduleDays);
+    expect(await slotsOf(s, p)).toEqual([]);
+  });
+
+  it("quando as regras não entendem, a IA lê o texto (e ela nunca passa das 8h às 20h)", async () => {
+    const { decideSchedule } = await import("../src/schedule/decide");
+    const counters = { sentLast10Min: 0, sentLastDay: 0, maxPer10Min: 50, maxPerDay: 50 };
+    const user = { state: "SCHED_DAYS_mentor" as const, previousState: null, hintSentInState: false, optedOutAt: null };
+    const msg = { type: "text" as const, wamid: "w", from: "5511", body: "depois do almoço nos primeiros dias úteis" };
+    const d = decideSchedule(user, msg, counters, new Date(), undefined, { slots: [], ai: { slots: [{ day: "segunda", start: "13:00", end: "22:00" }] } });
+    expect(d?.effect?.slots).toEqual([{ day: "segunda", start: "13:00", end: "20:00" }]);
+  });
+
+  it("áreas de mentoria: várias de uma vez, inclusive 'todas'", async () => {
+    const { parseCategories, CATEGORIES } = await import("../src/profile/categories");
+    expect(parseCategories("computação, design e liderança")).toEqual(["computacao", "lideranca", "design"]);
+    expect(parseCategories("todas")).toEqual(CATEGORIES.map((c) => c.key));
+    expect(parseCategories("todas as áreas")).toHaveLength(CATEGORIES.length);
+  });
+});
+
+describe("o que o testador escreveu e como corrigir", () => {
+  it("'segunda a quarta das 17 horas às 18 horas e, na sexta, das 15h às 16h30' é lido exatamente assim", async () => {
+    const s = mk(); const p = s.phone(30);
+    await toMentorSchedule(s, p);
+    await s.text(p, "segunda a quarta das 17 horas às 18 horas e, na sexta, das 15h às 16h30"); s.advance(1000);
+    expect(bodyOf(s, p)).toMatch(/Anotado:\n• Segunda: 17h às 18h\n• Terça: 17h às 18h\n• Quarta: 17h às 18h\n• Sexta: 15h às 16h30/);
+    expect(await slotsOf(s, p)).toContainEqual({ day: "sexta", start: "15:00", end: "16:30" });
+  });
+
+  it("corrigir por texto: tirar um dia, trocar os horários de um dia e refazer tudo", async () => {
+    const s = mk(); const p = s.phone(31);
+    await toMentorSchedule(s, p);
+    await s.text(p, "segunda a quarta das 17h às 18h e sexta das 15h às 16h30"); s.advance(1000);
+    await s.text(p, "tirar a terça"); s.advance(1000);
+    expect((await slotsOf(s, p)).map((x) => x.day)).toEqual(["segunda", "quarta", "sexta"]);
+    await s.text(p, "na verdade sexta das 14h às 16h"); s.advance(1000);
+    expect((await slotsOf(s, p)).filter((x) => x.day === "sexta")).toEqual([{ day: "sexta", start: "14:00", end: "16:00" }]);
+    expect((await slotsOf(s, p)).filter((x) => x.day === "segunda")).toEqual([{ day: "segunda", start: "17:00", end: "18:00" }]); // o resto fica
+    await s.text(p, "só quarta das 9h às 10h"); s.advance(1000);
+    expect(await slotsOf(s, p)).toEqual([{ day: "quarta", start: "09:00", end: "10:00" }]);
+    await s.text(p, "tirar quarta"); s.advance(1000);
+    expect(await slotsOf(s, p)).toEqual([]);
+    expect(rowIds(s, p)).toHaveLength(7); // volta à lista inteira de dias
+  });
+});
+

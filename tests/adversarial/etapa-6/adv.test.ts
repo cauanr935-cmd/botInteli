@@ -31,12 +31,13 @@ async function setup(analyzer: AudioAnalyzer, store = new MemoryAudioStore()) {
   repo.registrations.set(WA, { consentAt: T0, termsVersion: "v1", registeredAt: T0, values: {}, waIdHash: await hashWaId(WA) });
   repo.conversations.set(WA, { state: "AWAIT_AUDIO", previousState: null, hintSentInState: false, optedOutAt: null, version: 1 });
   const deps = { repo, logger, send, maxPerDay: 50, maxPer10Min: 50, now, audio: { process: (m: AudioEvent, h: boolean) => processAudio(m, h, ad) } };
-  return { repo, graph, store, deps, logs };
+  return { repo, graph, store, deps, logs, media };
 }
 
 describe("adversarial etapa 6", () => {
-  it("5 falhas seguidas do analisador: no máximo 1 mensagem de erro e volta a AWAIT_AUDIO", async () => {
-    const s = await setup(new MockAudioAnalyzer(() => { throw new Error("boom"); }));
+  it("5 falhas seguidas no download: no máximo 1 mensagem de erro e volta a AWAIT_AUDIO", async () => {
+    const s = await setup(new MockAudioAnalyzer());
+    s.media.download = async () => ({ ok: false, reason: "error" });
     for (let i = 0; i < 5; i++) await handleIncomingMessage(audio(), s.deps);
     expect(s.logs).not.toContain("audio_pipeline_error");
     expect(s.graph).toHaveBeenCalledTimes(1);
@@ -56,11 +57,10 @@ describe("adversarial etapa 6", () => {
     for (const k of s.store.objects.keys()) expect(k).not.toContain(WA);
     expect(s.logs.join(" ")).not.toContain(WA);
   });
-  it("duas entregas simultâneas de áudio: só um é processado", async () => {
-    const an = new MockAudioAnalyzer(async () => { await new Promise((r) => setTimeout(r, 20)); return { text: "ok", raw: {} }; });
-    const s = await setup(an);
+  it("duas entregas simultâneas de áudio: só um é guardado e só uma pergunta sai", async () => {
+    const s = await setup(new MockAudioAnalyzer());
     await Promise.all([handleIncomingMessage(audio(), s.deps), handleIncomingMessage(audio(), s.deps)]);
-    expect(an.calls.length).toBe(1);
+    expect(s.repo.audios.size).toBe(1);
     expect(s.graph).toHaveBeenCalledTimes(1);
   });
   it("HTTP analyzer travado: 3 tentativas no máximo e termina", async () => {

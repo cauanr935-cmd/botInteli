@@ -87,7 +87,7 @@ describe("C4.2 coleta em texto: nome e turma, depois áudio", () => {
     expect((await s.repo.getConversation(WA)).state).toBe("REG_FIELD_full_name");
     expect((await s.repo.getRegistration(WA)).consentAt).toEqual(NOW);
   });
-  it("C4.2 curiosidades: texto curto recebe a dica exata, uma vez; depois silêncio; texto longo é aceito", async () => {
+  it("C4.2 curiosidades: texto curto recebe a dica exata, depois aviso descontraído; texto longo é aceito", async () => {
     const s = setup();
     for (const m of [text("oi"), button("consent_yes"), text("Maria da Silva"), text("Turma 12")]) await s.feed(m);
     const n = s.graph.mock.calls.length;
@@ -95,10 +95,10 @@ describe("C4.2 coleta em texto: nome e turma, depois áudio", () => {
     expect(s.graph.mock.calls.length).toBe(n + 1);
     expect(s.sent().at(-1).text.body).toBe("Conte as suas curiosidades (data de nascimento, esporte, time e hobbies) em um áudio ou em um texto de pelo menos 10 caracteres.");
     await s.feed(text("time"));
-    expect(s.graph.mock.calls.length).toBe(n + 1);
+    expect(s.graph.mock.calls.length).toBe(n + 2); // dica exata + aviso descontraído
     expect((await s.repo.getConversation(WA)).state).toBe("REG_PROFILE_AUDIO");
     await s.feed(text("nasci em 1990, gosto de futebol"));
-    expect(s.graph.mock.calls.length).toBe(n + 2);
+    expect(s.graph.mock.calls.length).toBe(n + 3); // + a próxima pergunta (papel); o texto válido é aceito
     expect((await s.repo.getConversation(WA)).state).toBe("PROFILE_ROLE");
   });
 });

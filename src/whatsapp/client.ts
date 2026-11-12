@@ -48,21 +48,18 @@ export async function sendGuarded(message: OutboundMessage, ctx: SendContext): P
 
     const now = (ctx.now ?? (() => new Date()))();
 
-    // 2. janela de 23h30
-    let last: Date | null;
-    try {
-      last = await ctx.repo.getLastUserMessageAt(message.to);
-    } catch {
-      return { status: "error", code: "window_lookup_failed" };
-    }
+    // 2 e 3. janela de 23h30 e trava manual: as duas leituras são independentes e rodam juntas (uma viagem de rede a menos).
+    // A ordem das decisões é a mesma de antes e continua fail closed: erro em qualquer uma = não envia.
+    const hashP = hashWaId(message.to);
+    const [windowRes, lockRes] = await Promise.allSettled([
+      ctx.repo.getLastUserMessageAt(message.to),
+      ctx.repo.getManualLock(ctx.phoneNumberId),
+    ]);
+    if (windowRes.status === "rejected") return { status: "error", code: "window_lookup_failed" };
+    const last = windowRes.value;
     if (!last || now.getTime() - last.getTime() > WINDOW_MS) return { status: "blocked_window" };
-
-    // 3. trava manual (fail closed)
-    try {
-      if ((await ctx.repo.getManualLock(ctx.phoneNumberId)).locked) return { status: "blocked_manual_lock" };
-    } catch {
-      return { status: "error", code: "lock_lookup_failed" };
-    }
+    if (lockRes.status === "rejected") return { status: "error", code: "lock_lookup_failed" };
+    if (lockRes.value.locked) return { status: "blocked_manual_lock" };
 
     // 4. reserva atômica da vaga
     const month = monthKey(now, ctx.timezone);
@@ -73,8 +70,12 @@ export async function sendGuarded(message: OutboundMessage, ctx: SendContext): P
       ctx.logger.log("error", "budget_reserve_failed");
       return { status: "error", code: "reserve_failed" };
     }
-    await emitAlerts(ctx, month, outcome);
-    if (!outcome.ok) return { status: "blocked_budget" };
+    // Alertas de 80% e de disjuntor são só log: rodam junto com o envio, sem atrasá-lo (e são aguardados no fim).
+    const alerts = emitAlerts(ctx, month, outcome);
+    if (!outcome.ok) {
+      await alerts;
+      return { status: "blocked_budget" };
+    }
 
     // 5. envio (a vaga NÃO é devolvida se falhar)
     const reservedAt = now;
@@ -112,7 +113,7 @@ export async function sendGuarded(message: OutboundMessage, ctx: SendContext): P
     // 6. outbound_log (falha aqui não muda o resultado do envio)
     try {
       await ctx.repo.insertOutboundLog({
-        waIdHash: await hashWaId(message.to),
+        waIdHash: await hashP,
         messageType: message.type,
         wamid,
         reservedAt,
@@ -122,6 +123,7 @@ export async function sendGuarded(message: OutboundMessage, ctx: SendContext): P
     } catch {
       ctx.logger.log("error", "outbound_log_failed");
     }
+    await alerts;
     return errorCode === null ? { status: "sent", wamid } : { status: "error", code: errorCode };
   } catch {
     return { status: "error", code: "unexpected" };

@@ -111,7 +111,7 @@ export default {
       return handlePanel(request, { env, repo, bucket: env.AUDIOS });
     }
     // Termos de Uso e Política de Privacidade (LGPD): página pública, o link citado no consentimento.
-    if (request.method === "GET" && (pathname === "/privacidade" || pathname === "/termos")) return legalResponse();
+    if (request.method === "GET" && (pathname === "/privacidade" || pathname === "/termos" || pathname === "/lgpd")) return legalResponse();
     // Simulador de chat web (canal alternativo enquanto a API da Meta não é liberada). Desligado por padrão.
     if (pathname === "/chat" || pathname.startsWith("/chat/")) {
       return handleChat(request, { env, logger, pageHtml: PAGE_HTML });
@@ -128,6 +128,7 @@ export default {
       await runScheduled({
         repo: new SupabaseRepo(cfg.supabaseUrl, cfg.supabaseServiceKey), logger,
         phoneNumberId: cfg.phoneNumberId, stopAt: cfg.stopAt, timezone: cfg.metaAccountTimezone,
+        ...(env.AUDIOS ? { store: new R2AudioStore(env.AUDIOS) } : {}),
       });
     } catch (e) {
       logger.log("error", "config_invalid", { message: (e as Error).message });

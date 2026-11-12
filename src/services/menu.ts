@@ -15,7 +15,7 @@ export const MENU_FALLBACKS = {
 
 /** Respostas prontas de serviços (usadas se o banco não tiver `service_<id>` em canned_responses). */
 export const SERVICE_ANSWER_FALLBACKS: Record<string, string> = {
-  contato: "Fale com o Cauã, um dos fundadores da Be My Mentor, pelo WhatsApp: 88 99289-5332 (https://wa.me/5588992895332).",
+  contato: "Fale com o Cauan, um dos fundadores da Be My Mentor (junto com o Bruno), pelo WhatsApp: 88 99289-5332 (https://wa.me/5588992895332).",
 };
 
 /** Menu = UMA mensagem de lista com os serviços ativos (até 10, em ordem). `intro` substitui o corpo padrão. */

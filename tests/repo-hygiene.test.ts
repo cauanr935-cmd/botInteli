@@ -7,7 +7,7 @@ const FORBIDDEN = ["baileys", "whatsapp-web.js", "venom-bot", "wppconnect"];
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const n of readdirSync(dir)) {
-    if (["node_modules", ".git", ".wrangler"].includes(n)) continue;
+    if (["node_modules", ".git", ".wrangler", "referencias"].includes(n)) continue; // referencias: PDFs/MD de estratégia com imagens em base64
     const p = join(dir, n);
     if (statSync(p).isDirectory()) walk(p, out);
     else out.push(p);

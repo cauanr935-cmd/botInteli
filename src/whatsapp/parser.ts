@@ -48,6 +48,19 @@ function parseMessage(m: Obj): IncomingMessage | null {
       if (audioMime) return { ...base, type: "audio", mediaId, mimeType: audioMime, voice: false };
       return { ...base, type: "document", mediaId, ...(mime ? { mimeType: mime } : {}), ...(filename ? { filename } : {}) };
     }
+    case "contacts": {
+      const out: { waId?: string; phone?: string }[] = [];
+      for (const c of arr(m.contacts).slice(0, 5)) {
+        if (!isObj(c)) continue;
+        for (const ph of arr(c.phones).slice(0, 3)) {
+          if (!isObj(ph)) continue;
+          const waId = str(ph.wa_id);
+          const phone = str(ph.phone);
+          if (waId || phone) out.push({ ...(waId ? { waId } : {}), ...(phone ? { phone } : {}) });
+        }
+      }
+      return out.length > 0 ? { ...base, type: "contacts", contacts: out } : unsupported;
+    }
     case "interactive": {
       if (!isObj(m.interactive)) return unsupported;
       const i = m.interactive;

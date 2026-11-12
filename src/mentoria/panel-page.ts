@@ -68,15 +68,19 @@ audio{width:100%;max-width:420px;margin-top:6px}pre{background:var(--bg);padding
     var c = el("div", "card"), top = el("div", "top");
     top.appendChild(el("div", "subject", m.subject || "(sem assunto)"));
     top.appendChild(el("span", "pill " + (m.analysis.status === "done" ? "ok" : ""), m.analysis.status === "done" ? "analisada" : "análise pendente"));
+    if(m.contested){ top.appendChild(el("span", "pill", m.contested === "recusada" ? "contestada pelo parceiro" : "expirada (sem resposta do parceiro)")); }
+    else if(m.partnerStatus === "aguardando"){ top.appendChild(el("span", "pill", "aguardando confirmação do parceiro")); }
     c.appendChild(top);
     var dl = el("dl");
     row(dl, "Com quem", m.partner || "-");
+    if(m.occurredOn){ row(dl, "Aconteceu em", m.occurredOn.split("-").reverse().join("/")); }
     row(dl, "Papel de quem registrou", m.role === "mentor" ? "Mentor" : m.role === "mentorado" ? "Mentorado" : "-");
     row(dl, "Registrado por", m.registrant ? ((m.registrant.name || "sem nome") + " (" + (m.registrant.phoneMasked || "-") + ")") : "-");
     row(dl, "Data", fmt(m.createdAt));
     row(dl, "Áudio", m.mime + " · " + kb(m.bytes));
     c.appendChild(dl);
-    var a = el("audio"); a.controls = true; a.preload = "none"; a.src = "/painel/audio/" + m.id; c.appendChild(a);
+    if(m.audioDeleted){ c.appendChild(el("p", "muted", m.contested ? "Áudio apagado (mentoria contestada)." : "Áudio apagado após a análise.")); }
+    else { var a = el("audio"); a.controls = true; a.preload = "none"; a.src = "/painel/audio/" + m.id; c.appendChild(a); }
     if(m.analysis.status === "done"){
       var d = el("details"); d.appendChild(el("summary", null, "Resultado da análise"));
       d.appendChild(el("pre", null, JSON.stringify(m.analysis.result, null, 2))); c.appendChild(d);

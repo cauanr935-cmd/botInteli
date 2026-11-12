@@ -22,6 +22,11 @@ export type State =
   | `SCHED_HOURS_${string}`
   | "AWAIT_AUDIO"
   | "PROCESSING_AUDIO"
+  | "MENT_ROLE"
+  | "MENT_SUBJECT"
+  | "MENT_DATE"
+  | "MENT_DATE_TEXT"
+  | "MENT_PARTNER"
   | "PROFILE_ROLE"
   | "MENTOR_CATEGORIES"
   | "MENTOR_CATEGORIES_BOTH"

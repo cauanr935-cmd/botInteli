@@ -40,6 +40,11 @@ export interface DocumentEvent extends MessageBase {
   mimeType?: string;
   filename?: string;
 }
+/** Contato compartilhado: só o que identifica a pessoa no WhatsApp (nunca vai para log). */
+export interface ContactsEvent extends MessageBase {
+  type: "contacts";
+  contacts: { waId?: string; phone?: string }[];
+}
 export interface UnsupportedEvent extends MessageBase {
   type: "unsupported";
   /** Tipo original informado pela Meta (sticker, reaction, image...). */
@@ -70,6 +75,7 @@ export type IncomingMessage =
   | NfmReplyEvent
   | AudioEvent
   | DocumentEvent
+  | ContactsEvent
   | UnsupportedEvent;
 
 export type WebhookEvent = IncomingMessage | StatusEvent;

@@ -7,6 +7,7 @@ export const BMM_KNOWLEDGE = `
 - É uma rede (com proposta de rede social) que conecta estudantes universitários.
 - Objetivo: unir um aluno que tem uma dúvida acadêmica a outro aluno que tem o conhecimento para saná-la.
 - Público: estudantes universitários.
+- Origem: a Be My Mentor é uma iniciativa criada por Cauan e Bruno, dois alunos do Inteli, que são os fundadores e sócios.
 
 ## 2. Assuntos permitidos
 A plataforma é restrita ao meio acadêmico:
@@ -37,5 +38,5 @@ A plataforma é restrita ao meio acadêmico:
 - A pessoa pode ser mentor, mentorado ou os dois. Mentores escolhem as áreas em que topam ajudar: Computação, Matemática, Liderança, Negócios, Design/UX e Vida Acadêmica (iniciação científica, monitoria, bolsas, preparação para provas, recuperação e troca de curso).
 - Mentorados registram a dúvida: o bot só GUARDA a dúvida, e a equipe procura um mentor para tirá-la. O bot nunca responde dúvidas de conteúdo.
 - Menu: Registrar mentoria (enviar o áudio da mentoria), Horários (informar os dias e horários livres) e Contato.
-- Contato: WhatsApp do Cauã, um dos fundadores da Be My Mentor: 88 99289-5332.
+- Contato: WhatsApp do Cauan, um dos fundadores da Be My Mentor (o outro é o Bruno): 88 99289-5332.
 `.trim();

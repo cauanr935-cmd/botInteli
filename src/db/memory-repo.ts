@@ -1,8 +1,9 @@
 import { MAX_STOP_AT } from "../config";
+import { foldName } from "../mentoria/parse";
 import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
-  AudioRecord, BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaDraft, MentoriaRepo, MentoriaRow, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  AudioRecord, BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 export interface MemoryOutboundRow extends OutboundLogEntry {
@@ -151,6 +152,14 @@ export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (!cur) throw new Error("audio inexistente");
     this.audios.set(id, { ...cur, status, result, finishedAt: at });
   }
+  readonly sensitiveEvents: { waIdHash: string; level: "A" | "B"; channel: string; at: Date }[] = [];
+  async recordSensitiveEvent(waIdHash: string, level: "A" | "B", channel: string, at: Date): Promise<void> {
+    this.sensitiveEvents.push({ waIdHash, level, channel, at });
+  }
+  async lastSensitiveEventAt(waIdHash: string): Promise<Date | null> {
+    return this.sensitiveEvents.filter((e) => e.waIdHash === waIdHash).reduce<Date | null>((m, e) => (m === null || e.at > m ? e.at : m), null);
+  }
+
   async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
     return this.outbound.filter((r) => r.waIdHash === waIdHash && r.reservedAt >= since).map((r) => r.reservedAt);
   }
@@ -251,12 +260,15 @@ export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
       id: a.id, waIdHash: a.waIdHash, role: a.mentoria?.role ?? null, subject: a.mentoria?.subject ?? null,
       partner: a.mentoria?.partner ?? null, mime: a.mime, bytes: a.bytes, r2Key: a.r2Key, createdAt: a.createdAt,
       analysisResult: an?.result ?? null, analysisAt: an?.at ?? null,
+      ocorreuEm: a.ocorreuEm ?? null, partnerHash: a.partnerWaIdHash ?? null,
+      partnerConfirmedAt: a.partnerConfirmedAt ?? null, partnerRejectedAt: a.partnerRejectedAt ?? null,
+      audioSha256: a.audioSha256 ?? null, audioDeletedAt: a.audioDeletedAt ?? null, contestedReason: a.contestedReason ?? null,
     };
   }
   async listMentorias(o: { pending?: boolean; limit: number; before?: Date }): Promise<MentoriaRow[]> {
     return [...this.audios.values()].filter((a) => a.mentoria)
       .map((a) => this.toMentoria(a))
-      .filter((m) => (!o.pending || m.analysisResult === null) && (!o.before || m.createdAt < o.before))
+      .filter((m) => (!o.pending || (m.analysisResult === null && m.audioDeletedAt === null && (m.ocorreuEm === null || m.partnerConfirmedAt !== null))) && (!o.before || m.createdAt < o.before))
       .sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime()).slice(0, o.limit);
   }
   async getMentoria(id: string): Promise<MentoriaRow | null> {
@@ -267,6 +279,88 @@ export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (!this.audios.get(id)?.mentoria) return false;
     this.analysis.set(id, { result, at });
     return true;
+  }
+  // ---- Mentoria v2: parceiro, confirmação e limpeza ----
+  private person(waId: string, r: RegistrationRecord & { waIdHash?: string }): PersonRef | null {
+    if (!r.waIdHash) return null;
+    return { waId, waIdHash: r.waIdHash, fullName: r.values.full_name ?? null, consentAt: r.consentAt, termsVersion: r.termsVersion };
+  }
+  async findPersonByWaIdHash(hash: string): Promise<PersonRef | null> {
+    for (const [waId, r] of this.registrations) if (r.waIdHash === hash) return this.person(waId, r);
+    return null;
+  }
+  async findPeopleByName(tokens: readonly string[], limit: number): Promise<PersonRef[]> {
+    if (tokens.length === 0) return [];
+    const out: PersonRef[] = [];
+    for (const [waId, r] of this.registrations) {
+      const name = r.values.full_name;
+      if (!r.waIdHash || !r.consentAt || !r.termsVersion || !r.registeredAt || !name) continue;
+      const folded = foldName(name);
+      if (tokens.every((t) => folded.includes(t))) out.push(this.person(waId, r) as PersonRef);
+    }
+    return out.sort((a, b) => (a.fullName ?? "").localeCompare(b.fullName ?? "")).slice(0, Math.max(1, Math.min(limit, 10)));
+  }
+  async completeMentoria(waId: string, c: MentoriaCompletion): Promise<boolean> {
+    const a = this.audios.get(c.audioId);
+    const own = this.registrations.get(waId)?.waIdHash;
+    if (!a || !own || a.waIdHash !== own || a.serviceId !== "mentoria") return false;
+    if (c.partnerHash === own) throw new Error("parceiro nao pode ser o proprio registrante");
+    this.audios.set(a.id, {
+      ...a, mentoria: { role: c.role, subject: c.subject, ...(c.partnerName ? { partner: c.partnerName } : {}) },
+      ocorreuEm: c.occurredOn, partnerWaIdHash: c.partnerHash,
+    });
+    return true;
+  }
+  async discardIncompleteMentoria(id: string): Promise<{ r2Key: string } | null> {
+    const a = this.audios.get(id);
+    if (!a || a.mentoria || a.serviceId !== "mentoria") return null;
+    this.audios.delete(id);
+    for (const [k, d] of this.drafts) if (d.audioId === id) this.drafts.delete(k);
+    return { r2Key: a.r2Key };
+  }
+  async listIncompleteMentorias(before: Date): Promise<{ id: string; r2Key: string }[]> {
+    return [...this.audios.values()].filter((a) => a.serviceId === "mentoria" && !a.mentoria && a.createdAt < before)
+      .map((a) => ({ id: a.id, r2Key: a.r2Key }));
+  }
+  private awaiting(a: AudioRecord): boolean {
+    return !!a.mentoria && !!a.partnerWaIdHash && !a.partnerConfirmedAt && !a.partnerRejectedAt && !a.contestedReason && !a.audioDeletedAt;
+  }
+  async listUnansweredMentorias(before: Date): Promise<{ id: string; r2Key: string }[]> {
+    return [...this.audios.values()].filter((a) => this.awaiting(a) && a.createdAt < before).map((a) => ({ id: a.id, r2Key: a.r2Key }));
+  }
+  async expireMentoria(id: string, at: Date): Promise<boolean> {
+    const a = this.audios.get(id);
+    if (!a || !this.awaiting(a)) return false;
+    this.audios.set(id, { ...a, contestedReason: "expirada", audioDeletedAt: at });
+    return true;
+  }
+  async listPendingConfirmations(partnerHashes: readonly string[]): Promise<PendingConfirmation[]> {
+    return [...this.audios.values()]
+      .filter((a) => this.awaiting(a) && partnerHashes.includes(a.partnerWaIdHash as string))
+      .sort((x, y) => x.createdAt.getTime() - y.createdAt.getTime())
+      .map((a) => ({
+        id: a.id,
+        registrantName: [...this.registrations.values()].find((r) => r.waIdHash === a.waIdHash)?.values.full_name ?? null,
+        subject: a.mentoria?.subject ?? "", occurredOn: a.ocorreuEm ?? "", createdAt: a.createdAt,
+        prompted: a.partnerPromptedAt !== undefined, partnerHash: a.partnerWaIdHash as string,
+      }));
+  }
+  async markPartnerPrompted(id: string, at: Date): Promise<void> {
+    const a = this.audios.get(id);
+    if (a && !a.partnerPromptedAt) this.audios.set(id, { ...a, partnerPromptedAt: at });
+  }
+  async answerPartner(id: string, partnerHashes: readonly string[], answer: "yes" | "no", at: Date, asHash: string): Promise<PartnerAnswerOutcome> {
+    const a = this.audios.get(id);
+    if (!a?.mentoria || !a.partnerWaIdHash || !partnerHashes.includes(a.partnerWaIdHash)) return "not_found";
+    if (!this.awaiting(a)) return "already";
+    // Mesma regra do gatilho do banco (R6): só quem consentiu responde.
+    const ok = [...this.registrations.values()].some((r) => r.waIdHash === asHash && r.consentAt !== null && r.termsVersion !== null);
+    if (!ok) return "no_consent";
+    const base = { ...a, partnerWaIdHash: asHash };
+    this.audios.set(id, answer === "yes"
+      ? { ...base, partnerConfirmedAt: at }
+      : { ...base, partnerRejectedAt: at, contestedReason: "recusada", audioDeletedAt: at });
+    return answer === "yes" ? "confirmed" : "rejected";
   }
   readonly loginLocks = new Map<string, { failures: number; lockedUntil: Date | null }>();
   async getLoginLock(key: string): Promise<{ failures: number; lockedUntil: Date | null }> {

@@ -79,12 +79,12 @@ describe("C3.2 dica única", () => {
     for (const t of ["blablabla", "qual o preco", "xyz", "me ajuda", "???", "kkkk", "teste", "asdf", "quero algo", "hmm"]) {
       await s.feed(text(t));
     }
-    expect(s.graph).toHaveBeenCalledTimes(2);
+    expect(s.graph).toHaveBeenCalledTimes(4); // boas-vindas + dica + aviso + despedida; só então silêncio (teto de 4 em 10 min)
   });
-  it("C3.2 texto sem relação logo de cara (estado NEW): 1 dica e depois silêncio", async () => {
+  it("C3.2 texto sem relação logo de cara (estado NEW): dica, aviso, despedida e depois silêncio", async () => {
     const s = setup();
     for (let i = 0; i < 5; i++) await s.feed(text("blablabla " + i));
-    expect(s.graph).toHaveBeenCalledTimes(1);
+    expect(s.graph).toHaveBeenCalledTimes(4); // dica + aviso + despedida + teto
   });
 });
 

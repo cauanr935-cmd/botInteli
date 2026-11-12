@@ -165,33 +165,32 @@ describe("C6.2 armazenamento", () => {
     expect(key).not.toContain(WA);
     expect(key).toContain(await s.hash);
     const row = [...s.repo.audios.values()][0]!;
-    expect(row).toMatchObject({ r2Key: key, mime: "audio/ogg", bytes: 100, status: "done", serviceId: "mentoria", waIdHash: await s.hash });
-    expect(row.finishedAt).not.toBeNull();
+    // Mentoria INCOMPLETA: só o arquivo (assunto, data e parceiro vêm depois); nada de análise.
+    expect(row).toMatchObject({ r2Key: key, mime: "audio/ogg", bytes: 100, status: "processing", serviceId: "mentoria", waIdHash: await s.hash });
+    expect(row.mentoria).toBeUndefined();
     expect(JSON.stringify(row)).not.toContain(WA);
   });
 });
 
 describe("C6.3 fluxo feliz", () => {
-  it("C6.3 1 áudio -> 1 mensagem (texto do resultado + botão Menu) e volta a AWAIT_AUDIO", async () => {
-    const s = setup({ analyzer: new MockAudioAnalyzer(() => ({ text: "Tudo certo", raw: { text: "Tudo certo" } })) });
+  it("C6.3 1 áudio -> 1 mensagem (pergunta do papel, com botões) e vai a MENT_ROLE", async () => {
+    const s = setup();
     await s.ready();
     await s.feed(audio());
     const out = s.sent();
     expect(out).toHaveLength(1);
     expect(out[0].interactive.type).toBe("button");
-    expect(out[0].interactive.body.text).toBe("Tudo certo");
-    expect(out[0].interactive.action.buttons[0].reply.id).toBe("menu");
-    expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
+    expect(out[0].interactive.action.buttons.map((b: { reply: { id: string } }) => b.reply.id)).toEqual(["ment_role_mentor", "ment_role_mentorado"]);
+    expect((await s.repo.getConversation(WA)).state).toBe("MENT_ROLE");
+    expect((await s.repo.getMentoriaDraft(WA)).audioId).toBe([...s.repo.audios.keys()][0]);
   });
-
-  it("C6.3 3 áudios seguidos (um de cada vez) -> 3 mensagens, sem nova instrução", async () => {
+  it("C6.3 outro áudio enquanto descreve a mentoria: silêncio (1 entrada válida = 1 resposta)", async () => {
     const s = setup();
     await s.ready();
     for (let i = 0; i < 3; i++) await s.feed(audio());
-    expect(s.sent()).toHaveLength(3);
-    expect(s.repo.audios.size).toBe(3);
+    expect(s.sent()).toHaveLength(1);
+    expect(s.repo.audios.size).toBe(1);
   });
-
   it("C6.3 caminho completo do menu: escolher serviço (1) + áudio (1) = 2 mensagens", async () => {
     const s = setup({ state: "MENU" });
     await s.ready();
@@ -200,11 +199,11 @@ describe("C6.3 fluxo feliz", () => {
     expect(s.sent()).toHaveLength(2);
   });
 
-  it("C6.3 resultado longo é cortado em 1024 caracteres", async () => {
-    const s = setup({ analyzer: new MockAudioAnalyzer(() => ({ text: "x".repeat(3000), raw: {} })) });
+  it("C6.3 R6: o analisador síncrono NÃO é chamado no áudio de mentoria (a voz do parceiro ainda não consentiu)", async () => {
+    const s = setup();
     await s.ready();
     await s.feed(audio());
-    expect(s.sent()[0].interactive.body.text.length).toBeLessThanOrEqual(1024);
+    expect((s.analyzer as MockAudioAnalyzer).calls).toHaveLength(0);
   });
 });
 
@@ -240,36 +239,34 @@ describe("C6.4 analisador lento ou com erro", () => {
     expect(Date.now() - t0).toBeLessThan(2000);
   });
 
-  it("C6.4 falha definitiva: no máximo 1 mensagem de erro, mesmo com falhas seguidas", async () => {
-    const s = setup({ analyzer: new MockAudioAnalyzer(() => { throw new AnalyzerError("x", false); }) });
+  it("C6.4 falha definitiva no download: no máximo 1 mensagem de erro, mesmo com falhas seguidas", async () => {
+    const s = setup({ download: async () => ({ ok: false, reason: "error" }) });
     await s.ready();
     await s.feed(audio());
     await s.feed(audio());
     await s.feed(audio());
     expect(s.sent()).toHaveLength(1);
     expect(s.sent()[0].text.body).toMatch(/de novo/);
-    expect([...s.repo.audios.values()].every((a) => a.status === "failed")).toBe(true);
+    expect(s.repo.audios.size).toBe(0);
     expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
   });
-
   it("C6.4 a mensagem de erro conta no orçamento (reserva) e nos limites da pessoa", async () => {
-    const s = setup({ analyzer: new MockAudioAnalyzer(() => { throw new Error("x"); }) });
+    const s = setup({ download: async () => ({ ok: false, reason: "error" }) });
     await s.ready();
     await s.feed(audio());
     expect(s.repo.outbound).toHaveLength(1);
     expect((await s.repo.getBudget("PN", "2026-11"))?.reservedCount).toBe(1);
   });
-
-  it("C6.4 depois de um erro, um áudio bom volta a responder o resultado", async () => {
+  it("C6.4 depois de um erro, um áudio bom volta a seguir o fluxo (pergunta do papel)", async () => {
     let n = 0;
-    const s = setup({ analyzer: new MockAudioAnalyzer(() => { if (++n === 1) throw new Error("x"); return { text: "bom", raw: {} }; }) });
+    const s = setup({ download: async () => (++n === 1 ? { ok: false, reason: "error" } : { ok: true, bytes: bytes() }) });
     await s.ready();
     await s.feed(audio());
     await s.feed(audio());
     expect(s.sent()).toHaveLength(2);
-    expect(s.sent()[1].interactive.body.text).toBe("bom");
+    expect(s.sent()[1].interactive.body.text).toMatch(/mentor/);
+    expect((await s.repo.getConversation(WA)).state).toBe("MENT_ROLE");
   });
-
   it("C6.4 limite por pessoa: sem vaga, silêncio (resultado salvo)", async () => {
     const s = setup({ maxPer10Min: 1 });
     await s.ready();
@@ -282,17 +279,14 @@ describe("C6.4 analisador lento ou com erro", () => {
 });
 
 describe("C6.5 janela de 24h", () => {
-  it("C6.5 resultado depois de 24h da última mensagem: não envia e salva o resultado", async () => {
-    const s = setup({ analyzer: undefined });
-    const slow = new MockAudioAnalyzer(() => { s.warp(24 * 3600 * 1000); return { text: "tarde", raw: { text: "tarde" } }; });
-    s.audioDeps.analyzer = slow;
+  it("C6.5 janela fechada durante o download: não envia, mas o arquivo fica guardado e a conversa avança", async () => {
+    const s = setup({ download: async () => { w.warp(24 * 3600 * 1000); return { ok: true, bytes: bytes() }; } });
+    const w = s;
     await s.ready();
     await s.feed(audio());
     expect(s.graph).not.toHaveBeenCalled();
-    const row = [...s.repo.audios.values()][0]!;
-    expect(row.status).toBe("done");
-    expect(row.result).toEqual({ text: "tarde" });
-    expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
+    expect(s.repo.audios.size).toBe(1);
+    expect((await s.repo.getConversation(WA)).state).toBe("MENT_ROLE");
   });
 });
 
@@ -347,18 +341,13 @@ describe("C6.7 durante PROCESSING_AUDIO", () => {
     expect(s.repo.audios.size).toBe(0);
   });
 
-  it("C6.7 'sair' durante o processamento é honrado e o resultado não é enviado", async () => {
-    const s = setup();
-    const slow = new MockAudioAnalyzer(async () => {
-      await s.feed(text("sair")); // chega no meio do processamento
-      return { text: "r", raw: {} };
-    });
-    s.audioDeps.analyzer = slow;
+  it("C6.7 'sair' durante o processamento é honrado e a pergunta não é enviada", async () => {
+    const s = setup({ download: async () => { await w.feed(text("sair")); return { ok: true, bytes: bytes() }; } });
+    const w = s;
     await s.ready();
     await s.feed(audio());
     expect((await s.repo.getConversation(WA)).state).toBe("OPTED_OUT");
     expect(s.sent()).toHaveLength(1); // só a confirmação do opt-out
-    expect([...s.repo.audios.values()][0]!.status).toBe("done");
   });
 });
 

@@ -37,6 +37,11 @@ export function toPublicMentoria(m: MentoriaRow) {
     id: m.id, role: m.role, subject: m.subject, partner: m.partner, mime: m.mime, bytes: m.bytes,
     createdAt: m.createdAt.toISOString(),
     registrant: m.registrant ?? null,
+    occurredOn: m.ocorreuEm ?? null,
+    // Só no painel: mentoria recusada ou sem resposta do parceiro nunca é listada para o notebook.
+    contested: m.contestedReason ?? null,
+    partnerStatus: m.ocorreuEm == null ? null : m.partnerConfirmedAt ? "confirmada" : m.contestedReason ? m.contestedReason : "aguardando",
+    audioDeleted: m.audioDeletedAt != null,
     analysis: m.analysisResult === null ? { status: "pending" } : { status: "done", at: m.analysisAt?.toISOString() ?? null, result: m.analysisResult },
   };
 }

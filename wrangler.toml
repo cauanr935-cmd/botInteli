@@ -3,6 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Smart Placement: o Worker roda perto do banco (Supabase), porque cada mensagem faz várias idas ao banco.
+# Reduz a latência da resposta; o webhook da Meta continua respondendo 200 na hora.
+[placement]
+mode = "smart"
+
 [triggers]
 crons = ["0 6 * * *"]
 

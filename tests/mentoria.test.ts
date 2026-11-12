@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { Simulator, MINUTE } from "../scripts/simulate";
-import { MENTORIA_SAVED_TEXT } from "../src/mentoria/texts";
 import { DEFAULT_SERVICES } from "../src/services/content";
 import { TEXTS } from "../src/conversation/texts";
 
@@ -25,7 +24,7 @@ describe("menu e serviços", () => {
     expect(DEFAULT_SERVICES.map((x) => x.title)).toEqual(["Registrar mentoria", "Horários", "Contato"]);
   });
 
-  it("Registrar mentoria: pede só o arquivo de áudio e guarda a mentoria", async () => {
+  it("Registrar mentoria: pede o arquivo, guarda e pergunta o papel (a mentoria só fica completa depois)", async () => {
     const s = mkSim();
     const p = s.phone(1);
     await toMenu(s, p);
@@ -35,11 +34,11 @@ describe("menu e serviços", () => {
     expect(lastBody(s, p)).toMatch(/Anexe o arquivo de áudio da mentoria/);
     expect((await s.repo.getConversation(p)).state).toBe("AWAIT_AUDIO");
     await s.audio(p);
-    expect(s.sentTo(p).length - before).toBe(2); // instrução + confirmação
-    expect(lastBody(s, p)).toBe(MENTORIA_SAVED_TEXT);
-    const rows = await s.repo.listMentorias({ limit: 10 });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ subject: "Mentoria", analysisResult: null });
+    expect(s.sentTo(p).length - before).toBe(2); // instrução + pergunta do papel
+    expect(lastBody(s, p)).toMatch(/mentor ou mentorado/);
+    expect((await s.repo.getConversation(p)).state).toBe("MENT_ROLE");
+    expect(await s.repo.listMentorias({ limit: 10 })).toHaveLength(0); // incompleta: ainda não é uma mentoria
+    expect(s.store.objects.size).toBe(2); // áudio de perfil + arquivo da mentoria
   });
 
   it("Registrar mentoria: texto no lugar do áudio recebe 1 dica e depois silêncio", async () => {
@@ -51,7 +50,7 @@ describe("menu e serviços", () => {
     await s.text(p, "quero falar sobre carreira"); s.advance(1000);
     expect(s.sentTo(p).length).toBe(n + 1);
     await s.text(p, "quero falar sobre carreira"); s.advance(1000);
-    expect(s.sentTo(p).length).toBe(n + 1);
+    expect(s.sentTo(p).length).toBe(n + 2); // dica + aviso descontraído
     expect((await s.repo.getConversation(p)).state).toBe("AWAIT_AUDIO");
   });
 
@@ -83,12 +82,12 @@ describe("menu e serviços", () => {
     expect(s.repo.availabilities.size).toBe(0);
   });
 
-  it("Contato: indica o WhatsApp do Cauã (88 99289-5332)", async () => {
+  it("Contato: indica o WhatsApp do Cauan (88 99289-5332)", async () => {
     const s = mkSim();
     const p = s.phone(5);
     await toMenu(s, p);
     await s.list(p, "svc_contato"); s.advance(1000);
-    expect(lastBody(s, p)).toMatch(/Cauã/);
+    expect(lastBody(s, p)).toMatch(/Cauan.*Bruno/);
     expect(lastBody(s, p)).toMatch(/88 99289-5332/);
     expect(lastBody(s, p)).toMatch(/wa\.me\/5588992895332/);
   });

@@ -34,7 +34,7 @@ export interface IntentAgent {
    * Pergunta sobre o PROGRAMA (como funciona o bot/mentoria, cadastro, horários, contato): responde.
    * Dúvida de conteúdo (cálculo, programação...) NÃO é respondida: é para um mentor. Assunto sem relação = `off_topic`.
    */
-  answerFaq?(text: string, recent?: readonly string[]): Promise<FaqResult | null>;
+  answerFaq?(text: string, recent?: readonly string[], extra?: { excerpts?: readonly string[]; step?: string | undefined }): Promise<FaqResult | null>;
   /** Resume em poucas palavras o ASSUNTO de uma mentoria, a partir da dúvida (e do assunto que a pessoa informou). `null` = falhou. */
   summarizeSubject?(doubt: string, informedSubject: string | null): Promise<string | null>;
 }

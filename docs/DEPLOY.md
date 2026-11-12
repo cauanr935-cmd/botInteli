@@ -19,7 +19,7 @@ Objetivo: publicar o bot sem custo. Faça os passos na ordem. Cada passo marcado
 
 No SQL Editor (ou `supabase db push`), aplique **em ordem** os arquivos de `supabase/migrations/`:
 
-`0001_processed_messages.sql`, `0002_budget.sql`, `0003_conversation.sql`, `0004_registration.sql`, `0005_services.sql`, `0006_last_service.sql`, `0007_audios.sql`, `0008_housekeeping.sql`, `0009_mentorias.sql`, `0010_perfil_duvidas.sql`, `0011_horarios_contato.sql`, `0012_materiais.sql`, `0013_horarios_estruturados.sql`, `0014_perfil_texto.sql`.
+`0001_processed_messages.sql`, `0002_budget.sql`, `0003_conversation.sql`, `0004_registration.sql`, `0005_services.sql`, `0006_last_service.sql`, `0007_audios.sql`, `0008_housekeeping.sql`, `0009_mentorias.sql`, `0010_perfil_duvidas.sql`, `0011_horarios_contato.sql`, `0012_materiais.sql`, `0013_horarios_estruturados.sql`, `0014_perfil_texto.sql`, `0015_mentoria_v2.sql`, `0016_sensitive_events.sql`.
 
 Depois copie `SUPABASE_URL` e a **service key** (Settings > API). A service key é segredo: nunca vai para o git.
 
@@ -133,7 +133,7 @@ Use primeiro o **número de teste** da Meta: envia para até **5 destinatários*
 - [ ] Conferir o cadastro publicado: nome completo e aceite no Flow; perguntas pessoais respondidas por áudio depois do formulário.
 - [ ] Fuso da conta de mensagens confirmado na Meta (`META_ACCOUNT_TIMEZONE`).
 - [ ] **Não cadastrar forma de pagamento no Billing Hub.** Sem forma de pagamento, a Meta não entrega mensagens além da franquia: segunda proteção, além do disjuntor (950 de 1.000).
-- [ ] Migrações 0001 a 0013 aplicadas; bucket R2 criado com retenção definida.
+- [ ] Migrações 0001 a 0015 aplicadas; bucket R2 criado com retenção definida.
 - [ ] Contrato do analisador definido e testado.
 - [ ] Monitorar `GET /admin/budget` (uso do mês, disjuntor) e os logs `warn` (80% do corte) e `critical` (disjuntor aberto).
 - [ ] Se o disjuntor manual abrir por sinal de cobrança, investigue antes de liberar pelo endpoint `POST /admin/budget/unlock`.
@@ -165,3 +165,15 @@ npx wrangler deploy
 ## Modo admin do chat de teste
 
 Variáveis opcionais `CHAT_ADMIN_USER` e `CHAT_ADMIN_PASS` trocam o login do modo admin do `/chat` (o padrão de teste está no código). Defina-as antes de qualquer uso real.
+
+
+## Mentoria v2: integração com o Transcritor [humano]
+
+Etapa 1 (arquivo -> papel -> assunto -> data -> parceiro -> confirmação do parceiro). **Nada disto foi aplicado em produção pelos agentes.**
+
+1. **Migração** (antes do deploy do código; ela só acrescenta colunas, uma função e um gatilho, então o código antigo continua funcionando):
+   - SQL Editor do Supabase: colar e rodar `supabase/migrations/0015_mentoria_v2.sql`; ou `supabase db push`.
+   - Conferir: `select column_name from information_schema.columns where table_name = 'audios' and column_name in ('ocorreu_em','partner_wa_id_hash','partner_confirmed_at','partner_rejected_at','audio_sha256','audio_deleted_at','contested_reason');` (7 linhas).
+2. **Deploy do Worker**: `npm run verify && npx wrangler deploy`.
+3. **Cron**: o gatilho diário já existente passa a limpar também as mentorias (incompletas > 24 h; sem resposta do parceiro > 7 dias). Confirmar nos logs `cron_mentoria_cleanup`.
+4. **Compatibilidade com o notebook** (rotas `/api/v1/mentorias` iguais): `status=pending` agora só lista mentorias confirmadas pelo parceiro (as anteriores à v2, sem `ocorreu_em`, continuam listadas). O notebook não precisa mudar.

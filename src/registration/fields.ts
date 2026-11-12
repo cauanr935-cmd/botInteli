@@ -21,7 +21,7 @@ const isCommandWord = (s: string): boolean => intentsOf(s).size > 0;
 function textBetween(min: number, max: number) {
   return (raw: string): string | null => {
     const v = clean(raw);
-    if (v.length < min || v.length > max || !hasLetter(v) || isCommandWord(v)) return null;
+    if (v.length < min || v.length > max || !hasLetter(v) || isCommandWord(v) || v.includes("?")) return null; // "?" = pergunta, não nome
     return v;
   };
 }
@@ -32,7 +32,7 @@ function textBetween(min: number, max: number) {
  */
 export function validClassName(raw: string): string | null {
   const v = clean(raw);
-  if (v.length < 2 || v.length > 40 || isCommandWord(v)) return null;
+  if (v.length < 2 || v.length > 40 || isCommandWord(v) || v.includes("?")) return null;
   const numbers = v.match(/\d+/g);
   if (!numbers) return null; // só letras
   if (numbers.some((n) => n.length > 3)) return null; // número fora do padrão

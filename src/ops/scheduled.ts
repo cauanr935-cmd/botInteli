@@ -1,6 +1,8 @@
 // Cron diário (Etapa 7). Nunca envia mensagem (R1): só mantém o banco ativo, limpa e registra o uso.
 import { monthKey } from "../budget/month";
+import type { AudioStore } from "../audio/storage";
 import type { Repo } from "../db/repo";
+import { housekeepMentorias } from "../mentoria/housekeeping";
 import type { Logger } from "../lib/logger";
 
 export const PROCESSED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -13,6 +15,8 @@ export interface ScheduledDeps {
   phoneNumberId: string;
   stopAt: number;
   timezone: string;
+  /** R2 dos áudios (sem ele, a limpeza das mentorias não roda). */
+  store?: AudioStore;
   now?: () => Date;
 }
 
@@ -40,6 +44,15 @@ export async function runScheduled(deps: ScheduledDeps): Promise<void> {
     logger.log(released > 0 ? "warn" : "info", "cron_stuck_released", { released });
   } catch (e) {
     logger.log("error", "cron_stuck_failed", { error: e instanceof Error ? e.name : "unknown" });
+  }
+
+  if (deps.store) {
+    try {
+      const r = await housekeepMentorias(repo, deps.store, logger, now);
+      logger.log("info", "cron_mentoria_cleanup", r);
+    } catch (e) {
+      logger.log("error", "cron_mentoria_cleanup_failed", { error: e instanceof Error ? e.name : "unknown" });
+    }
   }
 
   try {

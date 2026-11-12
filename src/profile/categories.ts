@@ -47,6 +47,7 @@ export function parseCategories(raw: string): string[] {
     const label = normalizeText(c.label);
     if (norm.includes(label)) found.add(c.key);
   }
+  if (/\btodas( as areas)?\b/.test(norm)) for (const c of CATEGORIES) found.add(c.key);
   if (/\bvida academica\b|\bacademic/.test(norm)) found.add("vida_academica");
   if (/\bux\b|\bdesign\b/.test(norm)) found.add("design");
   return CATEGORIES.map((c) => c.key).filter((k) => found.has(k));

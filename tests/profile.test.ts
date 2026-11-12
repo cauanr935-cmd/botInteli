@@ -85,7 +85,7 @@ describe("perfil: áudio, papel, áreas e dúvida", () => {
     expect(lastBody(s, p)).toBe(T.hintCategories);
     await s.text(p, "blablabla"); s.advance(1000);
     await s.text(p, "blablabla"); s.advance(1000);
-    expect(s.sentTo(p).length).toBe(n + 1); // 1 dica e silêncio, por mais mensagens que mande
+    expect(s.sentTo(p).length).toBe(n + 3); // dica, aviso e despedida; só depois silêncio
     await s.list(p, "cat_matematica"); s.advance(1000);
     expect(lastBody(s, p)).toMatch(/Adicionado: Matemática/);
     expect(listRowIds(s, p)).not.toContain("cat_matematica");
@@ -141,7 +141,7 @@ describe("perfil: áudio, papel, áreas e dúvida", () => {
     await s.register(p, 1000);
     s.advance(60 * MINUTE);
     await s.text(p, "oi"); s.advance(1000);
-    expect(lastBody(s, p)).toBe(T.askReturning);
+    expect(lastBody(s, p)).toContain(T.askReturning);
     expect((await s.repo.getConversation(p)).state).toBe("RETURNING_CHOICE");
     await s.text(p, "menu"); s.advance(1000);
     expect((await s.repo.getConversation(p)).state).toBe("MENU");
@@ -264,8 +264,8 @@ describe("quem já é cadastrado volta a falar", () => {
     await s.text(p, "oi"); s.advance(1000); // repetição: silêncio
     await s.text(p, "blablabla"); s.advance(1000); // 1 dica
     await s.text(p, "blablabla"); s.advance(1000); // depois, silêncio
-    expect(s.sentTo(p).length).toBe(n + 1);
-    expect(lastBody(s, p)).toBe(T.hintReturning);
+    expect(s.sentTo(p).length).toBe(n + 2); // dica + aviso descontraído
+    expect(lastBody(s, p)).toMatch(/mentoria/i);
   });
 
   it("Mudar áreas: mantém as áreas atuais, deixa incluir Computação e mentorado vira 'os dois'", async () => {

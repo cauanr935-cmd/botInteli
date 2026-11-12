@@ -41,16 +41,19 @@ export async function processEvents(events: WebhookEvent[], deps: WebhookDeps): 
     let claimedKey: string | null = null;
     try {
       const received = now();
-      const fresh = await deps.repo.claimMessage(idempotencyKey(ev), received);
-      if (!fresh) {
+      // Reservar o wamid (idempotência) e registrar a última mensagem da pessoa são independentes: uma viagem só.
+      // Duplicata: o registro da hora é inofensivo (mesmo horário); a mensagem continua sendo ignorada.
+      const key = idempotencyKey(ev);
+      const sentAt = ev.type !== "status" && ev.timestamp ? new Date(ev.timestamp * 1000) : received;
+      const touch = ev.type !== "status" ? deps.repo.touchUser(ev.from, sentAt <= received ? sentAt : received) : Promise.resolve();
+      const [claim, touched] = await Promise.allSettled([deps.repo.claimMessage(key, received), touch]);
+      if (claim.status === "rejected") throw claim.reason;
+      if (!claim.value) {
         deps.logger.log("debug", "duplicate_ignored", { type: ev.type });
         continue;
       }
-      claimedKey = idempotencyKey(ev);
-      if (ev.type !== "status") {
-        const at = ev.timestamp ? new Date(ev.timestamp * 1000) : received;
-        await deps.repo.touchUser(ev.from, at <= received ? at : received);
-      }
+      claimedKey = key;
+      if (touched.status === "rejected") throw touched.reason;
       await deps.onEvent?.(ev);
       deps.logger.log("info", "event_processed", {
         type: ev.type,

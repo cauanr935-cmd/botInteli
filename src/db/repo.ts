@@ -23,6 +23,10 @@ export interface Repo extends BudgetRepo, MentoriaRepo {
   getRegistration(waId: string): Promise<RegistrationRecord>;
   /** Grava parte do cadastro. Lança se a pessoa não existir. */
   saveRegistration(waId: string, patch: RegistrationPatch): Promise<void>;
+  /** Tema sensível: grava só o evento (nível, canal, data), nunca o texto. */
+  recordSensitiveEvent(waIdHash: string, level: "A" | "B", channel: string, at: Date): Promise<void>;
+  /** Instante do último evento sensível da pessoa (null = nunca). Define o modo cuidado de 24 h. */
+  lastSensitiveEventAt(waIdHash: string): Promise<Date | null>;
   /** Instantes (reserved_at) das mensagens do bot para a pessoa desde `since`. */
   listOutboundSince(waIdHash: string, since: Date): Promise<Date[]>;
   /** Etapa 5: serviços ativos (o corte em 10 e a ordenação final são do ContentProvider). */
@@ -49,6 +53,30 @@ export interface Repo extends BudgetRepo, MentoriaRepo {
   getMentoriaDraft(waId: string): Promise<MentoriaDraft>;
   /** Mescla campos no rascunho; `null` apaga o rascunho inteiro. Lança se a pessoa não existir. */
   saveMentoriaDraft(waId: string, patch: Partial<MentoriaDraft> | null): Promise<void>;
+  /** Pessoa cadastrada com este hash de telefone (só quem já tem wa_id_hash gravado). */
+  findPersonByWaIdHash(hash: string): Promise<PersonRef | null>;
+  /** Busca por nome entre quem já se cadastrou e consentiu (todas as palavras, sem acento). Máx. `limit`. */
+  findPeopleByName(tokens: readonly string[], limit: number): Promise<PersonRef[]>;
+  /** Completa a mentoria cujo áudio já está guardado. Idempotente. false se o áudio não é desta pessoa. */
+  completeMentoria(waId: string, c: MentoriaCompletion): Promise<boolean>;
+  /** Apaga o registro de uma mentoria INCOMPLETA (devolve a chave no R2) e limpa o rascunho que a aponta. */
+  discardIncompleteMentoria(id: string): Promise<{ r2Key: string } | null>;
+  /** Mentorias incompletas criadas antes de `before` (fluxo abandonado). */
+  listIncompleteMentorias(before: Date): Promise<{ id: string; r2Key: string }[]>;
+  /** Mentorias completas sem resposta do parceiro, criadas antes de `before`. */
+  listUnansweredMentorias(before: Date): Promise<{ id: string; r2Key: string }[]>;
+  /** Marca como expirada (sem resposta) e registra a saída do áudio do R2. false se já foi respondida. */
+  expireMentoria(id: string, at: Date): Promise<boolean>;
+  /** Confirmações pendentes para quem tem algum destes hashes de telefone (as mais antigas primeiro). */
+  listPendingConfirmations(partnerHashes: readonly string[]): Promise<PendingConfirmation[]>;
+  /** Registra que a pergunta foi entregue ao parceiro. */
+  markPartnerPrompted(id: string, at: Date): Promise<void>;
+  /**
+   * Registra a resposta do parceiro. "rejected" também marca a mentoria como contestada e o áudio como apagado
+   * (quem chama apaga o objeto do R2 ANTES). `asHash` = wa_id_hash de quem responde (corrige a variação do 9º dígito).
+   * O banco recusa se o parceiro não consentiu (R6).
+   */
+  answerPartner(id: string, partnerHashes: readonly string[], answer: "yes" | "no", at: Date, asHash: string): Promise<PartnerAnswerOutcome>;
 }
 
 export type MentoriaRole = "mentor" | "mentorado";
@@ -56,7 +84,45 @@ export interface MentoriaDraft {
   role?: MentoriaRole;
   subject?: string;
   partner?: string;
+  /** Áudio já guardado (sem metadados ainda) que esta conversa está descrevendo. */
+  audioId?: string;
+  /** Data em que a mentoria aconteceu (YYYY-MM-DD). */
+  occurredOn?: string;
 }
+
+/** Pessoa cadastrada (só o que o fluxo de mentoria precisa). */
+export interface PersonRef {
+  waId: string;
+  waIdHash: string;
+  fullName: string | null;
+  consentAt: Date | null;
+  termsVersion: string | null;
+}
+
+/** Mentoria completa esperando a resposta do parceiro. */
+export interface PendingConfirmation {
+  id: string;
+  registrantName: string | null;
+  subject: string;
+  occurredOn: string;
+  createdAt: Date;
+  /** Pergunta já entregue ao parceiro? */
+  prompted: boolean;
+  partnerHash: string;
+}
+
+/** Dados que completam uma mentoria (áudio já guardado). */
+export interface MentoriaCompletion {
+  audioId: string;
+  role: MentoriaRole;
+  subject: string;
+  occurredOn: string;
+  partnerHash: string;
+  partnerName: string | null;
+}
+
+/** Resultado da resposta do parceiro. */
+export type PartnerAnswerOutcome = "confirmed" | "rejected" | "already" | "not_found" | "no_consent";
 
 /** Mentoria guardada (um áudio + metadados informados na conversa). */
 export interface MentoriaRow {
@@ -74,10 +140,22 @@ export interface MentoriaRow {
   analysisAt: Date | null;
   /** Dados de quem registrou (cadastro), quando existirem. */
   registrant?: { name: string | null; phoneMasked: string | null };
+  /** Data em que a mentoria aconteceu (YYYY-MM-DD); nula nas mentorias anteriores à v2. */
+  ocorreuEm?: string | null;
+  partnerHash?: string | null;
+  partnerConfirmedAt?: Date | null;
+  partnerRejectedAt?: Date | null;
+  audioSha256?: string | null;
+  audioDeletedAt?: Date | null;
+  contestedReason?: "recusada" | "expirada" | null;
 }
 
 /** Leitura e atualização das mentorias (painel e API de integração). */
 export interface MentoriaRepo {
+  /**
+   * Lista mentorias COMPLETAS. `pending` = sem resultado, áudio ainda guardado e (se for v2) confirmada pelo parceiro:
+   * só isso o notebook pode processar (R6: a voz do parceiro). Mentorias anteriores à v2 (sem `ocorreuEm`) seguem listadas.
+   */
   listMentorias(o: { pending?: boolean; limit: number; before?: Date }): Promise<MentoriaRow[]>;
   getMentoria(id: string): Promise<MentoriaRow | null>;
   /** Grava o resultado da análise. false se a mentoria não existe. */
@@ -98,8 +176,16 @@ export interface AudioRecord {
   mime: string;
   bytes: number;
   serviceId: string | null;
-  /** Metadados da mentoria (quando o áudio veio do fluxo de mentoria). */
+  /** Metadados da mentoria (quando o áudio veio do fluxo de mentoria). Ausente = áudio guardado, mentoria ainda incompleta. */
   mentoria?: { role?: MentoriaRole; subject: string; partner?: string };
+  ocorreuEm?: string;
+  partnerWaIdHash?: string;
+  partnerPromptedAt?: Date;
+  partnerConfirmedAt?: Date;
+  partnerRejectedAt?: Date;
+  audioSha256?: string;
+  audioDeletedAt?: Date;
+  contestedReason?: "recusada" | "expirada";
   status: "processing" | "done" | "failed";
   result: unknown;
   createdAt: Date;

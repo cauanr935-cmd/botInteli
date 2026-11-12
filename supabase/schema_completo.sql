@@ -384,3 +384,216 @@ insert into services (id, title, description, requires_audio, active, sort_order
   ('mentoria', 'Registrar mentoria', 'Conte o assunto e envie o áudio', true, true, 5)
 on conflict (id) do nothing;
 
+-- ===== supabase/migrations/0010_perfil_duvidas.sql =====
+-- Novo fluxo de cadastro: turma, papel (mentor/mentorado/ambos), áreas do mentor e dúvidas dos mentorados. Requer 0001-0009.
+alter table users add column if not exists class_name text;
+alter table users add column if not exists profile_role text check (profile_role in ('mentor', 'mentorado', 'ambos'));
+alter table users add column if not exists mentor_categories text[];
+
+-- R6 no banco: nenhum dado de cadastro sem consentimento (agora inclui turma, papel e áreas).
+alter table users drop constraint if exists users_consent_before_data;
+alter table users add constraint users_consent_before_data check (
+  (full_name is null and email is null and city is null and class_name is null and profile_role is null
+    and mentor_categories is null and registered_at is null)
+  or (consent_at is not null and terms_version is not null)
+);
+
+-- Dúvidas dos mentorados (insumo do algoritmo de match). `categories` = triagem inicial por palavras-chave.
+create table if not exists doubts (
+  id uuid primary key,
+  wa_id_hash text not null,
+  text text not null check (char_length(text) between 1 and 500),
+  categories text[] not null default '{}',
+  created_at timestamptz not null default now()
+);
+create index if not exists doubts_user_idx on doubts (wa_id_hash, created_at);
+
+create or replace function doubts_require_consent()
+returns trigger
+language plpgsql
+as $$
+begin
+  if not exists (select 1 from users where wa_id_hash = new.wa_id_hash and consent_at is not null) then
+    raise exception 'duvida sem consentimento' using errcode = 'check_violation';
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists doubts_consent_check on doubts;
+create trigger doubts_consent_check before insert on doubts
+  for each row execute function doubts_require_consent();
+
+alter table doubts enable row level security;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on table doubts from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke all on table doubts from authenticated';
+  end if;
+end $$;
+
+-- ===== supabase/migrations/0011_horarios_contato.sql =====
+-- Horários livres (texto livre) e ajustes do menu: sem "Análise de áudio"; Contato com o WhatsApp do Cauã. Requer 0001-0010.
+alter table users add column if not exists availability text check (availability is null or char_length(availability) <= 500);
+alter table users add column if not exists availability_at timestamptz;
+
+-- "Análise de áudio" não existe mais.
+update services set active = false where id = 'audio';
+
+insert into services (id, title, description, requires_audio, active, sort_order) values
+  ('mentoria', 'Registrar mentoria', 'Anexe o áudio da mentoria', true, true, 5),
+  ('horarios', 'Horários', 'Informe seus dias e horários livres', false, true, 20),
+  ('contato', 'Contato', 'Fale com o Cauã, da Be My Mentor', false, true, 30)
+on conflict (id) do update set title = excluded.title, description = excluded.description,
+  requires_audio = excluded.requires_audio, active = excluded.active, sort_order = excluded.sort_order;
+
+insert into canned_responses (key, text) values
+  ('service_contato', 'Fale com o Cauã, um dos fundadores da Be My Mentor, pelo WhatsApp: 88 99289-5332 (https://wa.me/5588992895332).')
+on conflict (key) do update set text = excluded.text, updated_at = now();
+
+-- ===== supabase/migrations/0012_materiais.sql =====
+-- Material anexado pelo mentorado junto da dúvida (documentos que o mentor deve ver antes da mentoria). Requer 0001-0011.
+create table if not exists doubt_materials (
+  id uuid primary key,
+  wa_id_hash text not null,
+  r2_key text not null,
+  mime text not null,
+  filename text check (filename is null or char_length(filename) <= 200),
+  bytes integer not null check (bytes > 0),
+  created_at timestamptz not null default now()
+);
+create index if not exists doubt_materials_user_idx on doubt_materials (wa_id_hash, created_at);
+
+-- R6: nenhum material sem consentimento.
+create or replace function doubt_materials_require_consent()
+returns trigger
+language plpgsql
+as $$
+begin
+  if not exists (select 1 from users where wa_id_hash = new.wa_id_hash and consent_at is not null) then
+    raise exception 'material sem consentimento' using errcode = 'check_violation';
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists doubt_materials_consent_check on doubt_materials;
+create trigger doubt_materials_consent_check before insert on doubt_materials
+  for each row execute function doubt_materials_require_consent();
+
+alter table doubt_materials enable row level security;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on table doubt_materials from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke all on table doubt_materials from authenticated';
+  end if;
+end $$;
+
+-- ===== supabase/migrations/0013_horarios_estruturados.sql =====
+-- Horários livres lidos pela IA: faixas estruturadas [{day, start, end}] (o texto original continua em users.availability). Requer 0011.
+alter table users add column if not exists availability_slots jsonb check (availability_slots is null or jsonb_typeof(availability_slots) = 'array');
+
+-- ===== supabase/migrations/0014_perfil_texto.sql =====
+-- Curiosidades do perfil também por texto (para quem prefere escrever a gravar áudio). Requer 0001-0013.
+alter table users add column if not exists profile_about text check (profile_about is null or char_length(profile_about) <= 1000);
+
+-- R6 no banco: nenhum dado de cadastro sem consentimento (agora inclui as curiosidades em texto).
+alter table users drop constraint if exists users_consent_before_data;
+alter table users add constraint users_consent_before_data check (
+  (full_name is null and email is null and city is null and class_name is null and profile_role is null
+    and mentor_categories is null and profile_about is null and registered_at is null)
+  or (consent_at is not null and terms_version is not null)
+);
+
+-- ===== supabase/migrations/0015_mentoria_v2.sql =====
+-- Mentoria v2 (Etapa 1): data, parceiro e confirmação dele. Requer 0001-0014.
+-- A voz do parceiro está na gravação: só pode ser confirmada/contestada por quem tem consentimento (R6).
+
+-- Rascunho em andamento (por pessoa): qual áudio guardado está sendo descrito e a data informada.
+alter table users add column if not exists draft_audio_id uuid;
+alter table users add column if not exists draft_ocorreu_em date;
+
+-- Mentoria: quando aconteceu, quem é o parceiro e o que ele respondeu.
+alter table audios add column if not exists ocorreu_em date;
+alter table audios add column if not exists partner_wa_id_hash text;
+-- Quando a pergunta de confirmação foi entregue ao parceiro (nulo = ainda pendente de entrega).
+alter table audios add column if not exists partner_prompted_at timestamptz;
+alter table audios add column if not exists partner_confirmed_at timestamptz;
+alter table audios add column if not exists partner_rejected_at timestamptz;
+-- SHA-256 dos bytes guardados (Etapa 2) e instante em que o objeto saiu do R2 (Etapa 3; também na recusa/expiração).
+alter table audios add column if not exists audio_sha256 text;
+alter table audios add column if not exists audio_deleted_at timestamptz;
+-- Por que a mentoria não segue para o notebook: 'recusada' (parceiro disse Não) ou 'expirada' (7 dias sem resposta).
+alter table audios add column if not exists contested_reason text check (contested_reason in ('recusada', 'expirada'));
+
+alter table audios drop constraint if exists audios_partner_not_self;
+alter table audios add constraint audios_partner_not_self
+  check (partner_wa_id_hash is null or partner_wa_id_hash <> wa_id_hash);
+
+create index if not exists audios_partner_pending_idx on audios (partner_wa_id_hash)
+  where partner_confirmed_at is null and partner_rejected_at is null and contested_reason is null and audio_deleted_at is null;
+
+-- R6 no banco, também para o parceiro: só quem consentiu pode confirmar ou contestar.
+create or replace function audios_partner_requires_consent()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.partner_confirmed_at is not null or new.partner_rejected_at is not null then
+    if new.partner_wa_id_hash is null or not exists (
+      select 1 from users
+       where wa_id_hash = new.partner_wa_id_hash and consent_at is not null and terms_version is not null
+    ) then
+      raise exception 'parceiro sem consentimento' using errcode = 'check_violation';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists audios_partner_consent_check on audios;
+create trigger audios_partner_consent_check before insert or update on audios
+  for each row execute function audios_partner_requires_consent();
+
+-- Busca de parceiro por nome entre quem já se cadastrou e consentiu (sem acento, todas as palavras).
+create or replace function find_people_by_name(p_tokens text[], p_limit integer)
+returns table (wa_id text, wa_id_hash text, full_name text)
+language sql
+stable
+as $$
+  select u.wa_id, u.wa_id_hash, u.full_name
+    from users u
+   where cardinality(p_tokens) >= 1
+     and u.consent_at is not null and u.terms_version is not null and u.registered_at is not null
+     and u.wa_id_hash is not null and u.full_name is not null
+     and not exists (
+       select 1 from unnest(p_tokens) t
+        where position(t in translate(lower(u.full_name), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc')) = 0
+     )
+   order by u.full_name
+   limit greatest(1, least(p_limit, 10));
+$$;
+
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on function find_people_by_name(text[], integer) from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke all on function find_people_by_name(text[], integer) from authenticated';
+  end if;
+end $$;
+-- Temas sensíveis (specs.md): só o EVENTO (nível, canal, data). O texto da mensagem NUNCA é guardado.
+create table if not exists sensitive_events (
+  id bigserial primary key,
+  wa_id_hash text not null,
+  level text not null check (level in ('A', 'B')),
+  channel text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists sensitive_events_user_idx on sensitive_events (wa_id_hash, created_at desc);
+alter table sensitive_events enable row level security;

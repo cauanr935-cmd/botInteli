@@ -60,6 +60,8 @@ export async function handleApi(request: Request, deps: ApiDeps): Promise<Respon
       if (request.method === "GET" && !one[2]) return json(toApiMentoria(row));
 
       if (request.method === "GET" && one[2] === "/audio") {
+        // R6: a voz do parceiro só vai para o notebook depois que ele confirmou (mentorias anteriores à v2 não têm parceiro).
+        if (row.audioDeletedAt != null || (row.ocorreuEm != null && row.partnerConfirmedAt == null)) return json({ error: "audio indisponível" }, 404);
         const obj = deps.bucket ? await deps.bucket.get(row.r2Key) : null;
         if (!obj) return json({ error: "audio indisponível" }, 404);
         return new Response(obj.body, { headers: { "Content-Type": row.mime, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });

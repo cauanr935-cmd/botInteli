@@ -1,10 +1,14 @@
+import { hashWaId } from "../lib/hash";
 import { maskPhone } from "../lib/logger";
 import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
   AudioRecord,
-  BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaDraft, MentoriaRepo, MentoriaRow, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
+
+const MENTORIA_COLS = "id,wa_id_hash,mentoria_role,subject,partner,mime,bytes,r2_key,created_at,analysis_result,analysis_at,ocorreu_em,partner_wa_id_hash,partner_confirmed_at,partner_rejected_at,audio_sha256,audio_deleted_at,contested_reason";
+const UUID = /^[0-9a-fA-F-]{36}$/;
 
 /** Repo sobre a API REST (PostgREST) do Supabase. */
 export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
@@ -174,6 +178,23 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
       body: JSON.stringify({ id: crypto.randomUUID(), wa_id_hash: d.waIdHash, text: d.text, categories: d.categories, created_at: d.at.toISOString() }),
     });
     if (!res.ok) throw new Error(`supabase insertDoubt falhou: ${res.status}`);
+  }
+
+  async recordSensitiveEvent(waIdHash: string, level: "A" | "B", channel: string, at: Date): Promise<void> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/sensitive_events`, {
+      method: "POST", headers: this.headers({ Prefer: "return=minimal" }),
+      body: JSON.stringify({ wa_id_hash: waIdHash, level, channel, created_at: at.toISOString() }),
+    });
+    if (!res.ok) throw new Error(`supabase recordSensitiveEvent falhou: ${res.status}`);
+  }
+  async lastSensitiveEventAt(waIdHash: string): Promise<Date | null> {
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/sensitive_events?wa_id_hash=eq.${encodeURIComponent(waIdHash)}&select=created_at&order=created_at.desc&limit=1`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase lastSensitiveEventAt falhou: ${res.status}`);
+    const rows = (await res.json()) as { created_at: string }[];
+    return rows[0] ? new Date(rows[0].created_at) : null;
   }
 
   async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
@@ -357,7 +378,7 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
   // ---- Mentorias ----
   async getMentoriaDraft(waId: string): Promise<MentoriaDraft> {
     const res = await this.fetchImpl(
-      `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&select=draft_role,draft_subject,draft_partner`,
+      `${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}&select=draft_role,draft_subject,draft_partner,draft_audio_id,draft_ocorreu_em`,
       { headers: this.headers() },
     );
     if (!res.ok) throw new Error(`supabase getMentoriaDraft falhou: ${res.status}`);
@@ -366,16 +387,20 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (r?.draft_role === "mentor" || r?.draft_role === "mentorado") d.role = r.draft_role;
     if (r?.draft_subject) d.subject = r.draft_subject;
     if (r?.draft_partner) d.partner = r.draft_partner;
+    if (r?.draft_audio_id) d.audioId = r.draft_audio_id;
+    if (r?.draft_ocorreu_em) d.occurredOn = r.draft_ocorreu_em;
     return d;
   }
 
   async saveMentoriaDraft(waId: string, patch: Partial<MentoriaDraft> | null): Promise<void> {
     const body = patch === null
-      ? { draft_role: null, draft_subject: null, draft_partner: null }
+      ? { draft_role: null, draft_subject: null, draft_partner: null, draft_audio_id: null, draft_ocorreu_em: null }
       : {
           ...(patch.role !== undefined ? { draft_role: patch.role } : {}),
           ...(patch.subject !== undefined ? { draft_subject: patch.subject } : {}),
           ...(patch.partner !== undefined ? { draft_partner: patch.partner } : {}),
+          ...(patch.audioId !== undefined ? { draft_audio_id: patch.audioId } : {}),
+          ...(patch.occurredOn !== undefined ? { draft_ocorreu_em: patch.occurredOn } : {}),
         };
     if (Object.keys(body).length === 0) return;
     const res = await this.fetchImpl(`${this.url}/rest/v1/users?wa_id=eq.${encodeURIComponent(waId)}`, {
@@ -397,14 +422,21 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
       createdAt: new Date(String(r.created_at)),
       analysisResult: r.analysis_result ?? null,
       analysisAt: r.analysis_at ? new Date(String(r.analysis_at)) : null,
+      ocorreuEm: typeof r.ocorreu_em === "string" ? r.ocorreu_em : null,
+      partnerHash: typeof r.partner_wa_id_hash === "string" ? r.partner_wa_id_hash : null,
+      partnerConfirmedAt: r.partner_confirmed_at ? new Date(String(r.partner_confirmed_at)) : null,
+      partnerRejectedAt: r.partner_rejected_at ? new Date(String(r.partner_rejected_at)) : null,
+      audioSha256: typeof r.audio_sha256 === "string" ? r.audio_sha256 : null,
+      audioDeletedAt: r.audio_deleted_at ? new Date(String(r.audio_deleted_at)) : null,
+      contestedReason: r.contested_reason === "recusada" || r.contested_reason === "expirada" ? r.contested_reason : null,
     };
   }
 
   async listMentorias(o: { pending?: boolean; limit: number; before?: Date }): Promise<MentoriaRow[]> {
     const q = [
-      "select=id,wa_id_hash,mentoria_role,subject,partner,mime,bytes,r2_key,created_at,analysis_result,analysis_at",
+      `select=${MENTORIA_COLS}`,
       "subject=not.is.null", "order=created_at.desc", `limit=${Math.max(1, Math.min(200, o.limit))}`,
-      ...(o.pending ? ["analysis_result=is.null"] : []),
+      ...(o.pending ? ["analysis_result=is.null", "audio_deleted_at=is.null", "or=(ocorreu_em.is.null,partner_confirmed_at.not.is.null)"] : []),
       ...(o.before ? [`created_at=lt.${encodeURIComponent(o.before.toISOString())}`] : []),
     ].join("&");
     const res = await this.fetchImpl(`${this.url}/rest/v1/audios?${q}`, { headers: this.headers() });
@@ -432,7 +464,7 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
   async getMentoria(id: string): Promise<MentoriaRow | null> {
     if (!/^[0-9a-fA-F-]{36}$/.test(id)) return null;
     const res = await this.fetchImpl(
-      `${this.url}/rest/v1/audios?id=eq.${id}&subject=not.is.null&select=id,wa_id_hash,mentoria_role,subject,partner,mime,bytes,r2_key,created_at,analysis_result,analysis_at`,
+      `${this.url}/rest/v1/audios?id=eq.${id}&subject=not.is.null&select=${MENTORIA_COLS}`,
       { headers: this.headers() },
     );
     if (!res.ok) throw new Error(`supabase getMentoria falhou: ${res.status}`);
@@ -450,6 +482,117 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (!res.ok) throw new Error(`supabase setAnalysisResult falhou: ${res.status}`);
     const rows = (await res.json()) as unknown[];
     return Array.isArray(rows) && rows.length > 0;
+  }
+
+  // ---- Mentoria v2: parceiro, confirmação e limpeza ----
+  private async getJson<T>(path: string, what: string): Promise<T> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/${path}`, { headers: this.headers() });
+    if (!res.ok) throw new Error(`supabase ${what} falhou: ${res.status}`);
+    return (await res.json()) as T;
+  }
+  private async patchRows(path: string, body: unknown, what: string): Promise<number> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/${path}`, {
+      method: "PATCH", headers: this.headers({ Prefer: "return=representation" }), body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`supabase ${what} falhou: ${res.status}`);
+    const rows = (await res.json()) as unknown[];
+    return Array.isArray(rows) ? rows.length : 0;
+  }
+  private toPerson(r: Record<string, unknown>): PersonRef {
+    return {
+      waId: String(r.wa_id), waIdHash: String(r.wa_id_hash), fullName: (r.full_name as string | null) ?? null,
+      consentAt: r.consent_at ? new Date(String(r.consent_at)) : null, termsVersion: (r.terms_version as string | null) ?? null,
+    };
+  }
+  async findPersonByWaIdHash(hash: string): Promise<PersonRef | null> {
+    if (!/^[0-9a-f]{64}$/.test(hash)) return null;
+    const rows = await this.getJson<Record<string, unknown>[]>(
+      `users?wa_id_hash=eq.${hash}&select=wa_id,wa_id_hash,full_name,consent_at,terms_version&limit=1`, "findPersonByWaIdHash");
+    return rows[0] ? this.toPerson(rows[0]) : null;
+  }
+  async findPeopleByName(tokens: readonly string[], limit: number): Promise<PersonRef[]> {
+    if (tokens.length === 0) return [];
+    const rows = await this.rpc<Record<string, unknown>[] | null>("find_people_by_name", { p_tokens: [...tokens], p_limit: limit });
+    return (rows ?? []).map((r) => this.toPerson({ ...r, consent_at: new Date(0).toISOString(), terms_version: "-" }));
+  }
+  async completeMentoria(waId: string, c: MentoriaCompletion): Promise<boolean> {
+    if (!UUID.test(c.audioId)) return false;
+    const own = await hashWaId(waId);
+    const n = await this.patchRows(`audios?id=eq.${c.audioId}&wa_id_hash=eq.${own}&service_id=eq.mentoria`, {
+      mentoria_role: c.role, subject: c.subject, ocorreu_em: c.occurredOn, partner_wa_id_hash: c.partnerHash,
+      partner: c.partnerName,
+    }, "completeMentoria");
+    return n > 0;
+  }
+  async discardIncompleteMentoria(id: string): Promise<{ r2Key: string } | null> {
+    if (!UUID.test(id)) return null;
+    const rows = await this.getJson<{ r2_key: string }[]>(`audios?id=eq.${id}&service_id=eq.mentoria&subject=is.null&select=r2_key`, "discardIncompleteMentoria");
+    const r = rows[0];
+    if (!r) return null;
+    const del = await this.fetchImpl(`${this.url}/rest/v1/audios?id=eq.${id}&subject=is.null`, { method: "DELETE", headers: this.headers() });
+    if (!del.ok) throw new Error(`supabase discardIncompleteMentoria falhou: ${del.status}`);
+    await this.patchRows(`users?draft_audio_id=eq.${id}`, {
+      draft_role: null, draft_subject: null, draft_partner: null, draft_audio_id: null, draft_ocorreu_em: null,
+    }, "discardIncompleteMentoria/draft");
+    return { r2Key: r.r2_key };
+  }
+  async listIncompleteMentorias(before: Date): Promise<{ id: string; r2Key: string }[]> {
+    const rows = await this.getJson<{ id: string; r2_key: string }[]>(
+      `audios?service_id=eq.mentoria&subject=is.null&created_at=lt.${encodeURIComponent(before.toISOString())}&select=id,r2_key&limit=200`, "listIncompleteMentorias");
+    return rows.map((r) => ({ id: r.id, r2Key: r.r2_key }));
+  }
+  private static readonly AWAITING =
+    "service_id=eq.mentoria&subject=not.is.null&ocorreu_em=not.is.null&partner_wa_id_hash=not.is.null&partner_confirmed_at=is.null&partner_rejected_at=is.null&contested_reason=is.null&audio_deleted_at=is.null";
+  async listUnansweredMentorias(before: Date): Promise<{ id: string; r2Key: string }[]> {
+    const rows = await this.getJson<{ id: string; r2_key: string }[]>(
+      `audios?${SupabaseRepo.AWAITING}&created_at=lt.${encodeURIComponent(before.toISOString())}&select=id,r2_key&limit=200`, "listUnansweredMentorias");
+    return rows.map((r) => ({ id: r.id, r2Key: r.r2_key }));
+  }
+  async expireMentoria(id: string, at: Date): Promise<boolean> {
+    if (!UUID.test(id)) return false;
+    return (await this.patchRows(`audios?id=eq.${id}&${SupabaseRepo.AWAITING}`, { contested_reason: "expirada", audio_deleted_at: at.toISOString() }, "expireMentoria")) > 0;
+  }
+  async listPendingConfirmations(partnerHashes: readonly string[]): Promise<PendingConfirmation[]> {
+    const hashes = partnerHashes.filter((h) => /^[0-9a-f]{64}$/.test(h));
+    if (hashes.length === 0) return [];
+    const rows = await this.getJson<Record<string, unknown>[]>(
+      `audios?${SupabaseRepo.AWAITING}&partner_wa_id_hash=in.(${hashes.join(",")})&order=created_at.asc&limit=20&select=id,wa_id_hash,subject,ocorreu_em,created_at,partner_prompted_at,partner_wa_id_hash`,
+      "listPendingConfirmations");
+    if (rows.length === 0) return [];
+    const owners = [...new Set(rows.map((r) => String(r.wa_id_hash)))];
+    const users = await this.getJson<{ wa_id_hash: string; full_name: string | null }[]>(
+      `users?wa_id_hash=in.(${owners.join(",")})&select=wa_id_hash,full_name`, "listPendingConfirmations/users").catch(() => []);
+    const names = new Map(users.map((u) => [u.wa_id_hash, u.full_name]));
+    return rows.map((r) => ({
+      id: String(r.id), registrantName: names.get(String(r.wa_id_hash)) ?? null, subject: String(r.subject),
+      occurredOn: String(r.ocorreu_em), createdAt: new Date(String(r.created_at)),
+      prompted: r.partner_prompted_at !== null && r.partner_prompted_at !== undefined, partnerHash: String(r.partner_wa_id_hash),
+    }));
+  }
+  async markPartnerPrompted(id: string, at: Date): Promise<void> {
+    if (!UUID.test(id)) return;
+    await this.patchRows(`audios?id=eq.${id}&partner_prompted_at=is.null`, { partner_prompted_at: at.toISOString() }, "markPartnerPrompted");
+  }
+  async answerPartner(id: string, partnerHashes: readonly string[], answer: "yes" | "no", at: Date, asHash: string): Promise<PartnerAnswerOutcome> {
+    if (!UUID.test(id)) return "not_found";
+    const cur = (await this.getJson<Record<string, unknown>[]>(
+      `audios?id=eq.${id}&subject=not.is.null&select=partner_wa_id_hash,partner_confirmed_at,partner_rejected_at,contested_reason,audio_deleted_at`, "answerPartner"))[0];
+    if (!cur || typeof cur.partner_wa_id_hash !== "string" || !partnerHashes.includes(cur.partner_wa_id_hash)) return "not_found";
+    if (cur.partner_confirmed_at || cur.partner_rejected_at || cur.contested_reason || cur.audio_deleted_at) return "already";
+    const body = answer === "yes"
+      ? { partner_wa_id_hash: asHash, partner_confirmed_at: at.toISOString() }
+      : { partner_wa_id_hash: asHash, partner_rejected_at: at.toISOString(), contested_reason: "recusada", audio_deleted_at: at.toISOString() };
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/audios?id=eq.${id}&partner_confirmed_at=is.null&partner_rejected_at=is.null&contested_reason=is.null&audio_deleted_at=is.null`,
+      { method: "PATCH", headers: this.headers({ Prefer: "return=representation" }), body: JSON.stringify(body) });
+    if (!res.ok) {
+      // O gatilho do banco (R6) recusa quem não consentiu: check_violation (23514).
+      if ((await res.text().catch(() => "")).includes("23514")) return "no_consent";
+      throw new Error(`supabase answerPartner falhou: ${res.status}`);
+    }
+    const rows = (await res.json()) as unknown[];
+    if (!Array.isArray(rows) || rows.length === 0) return "already";
+    return answer === "yes" ? "confirmed" : "rejected";
   }
 
   // ---- Login do painel ----

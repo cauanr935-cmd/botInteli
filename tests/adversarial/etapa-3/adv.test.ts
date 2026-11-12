@@ -41,7 +41,7 @@ describe("adv etapa 3", () => {
   it("lixo paralelo de 30 mensagens: exatamente 1 dica", async () => {
     const s = setup();
     await Promise.all(Array.from({ length: 30 }, (_, i) => s.feed(t(`xyz${i}`))));
-    expect(s.graph).toHaveBeenCalledTimes(1);
+    expect(s.graph).toHaveBeenCalledTimes(2); // dica + um único aviso (a rajada não multiplica os avisos)
   });
   it("sair/voltar em loop nunca passa de 4 envios em 10 min", async () => {
     const s = setup();
