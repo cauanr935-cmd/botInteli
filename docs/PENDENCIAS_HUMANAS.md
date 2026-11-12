@@ -1,5 +1,25 @@
 # Pendências humanas
 
+> **Atualização 2026-11-12:** o canal WhatsApp migrou da Meta para a **Evolution API (Baileys)**. Os itens antigos da Meta (conta, token, `PHONE_NUMBER_ID`, número de teste, Flow, Billing Hub, verificação da empresa) estão **obsoletos**; ficam abaixo só como histórico. A lista vigente é a seção seguinte.
+
+## Migração para a Evolution API (vigente)
+- [ ] Criar a VM Oracle Cloud e subir a Evolution v2 em Docker, **com a versão fixada**, atrás de HTTPS (`docs/DEPLOY.md`, seção 5).
+- [ ] Definir `AUTHENTICATION_API_KEY` forte na Evolution → `EVOLUTION_API_KEY`; gerar `EVOLUTION_WEBHOOK_TOKEN` (16+ caracteres aleatórios); definir `EVOLUTION_URL` e `EVOLUTION_INSTANCE` no Worker (`wrangler secret put` / `[vars]`). Atualizar o `.dev.vars` local.
+- [ ] Comprar um chip **dedicado e novo**; criar a instância e conectar pelo QR Code; manter o aparelho/chip ativo e com recargas.
+- [ ] Configurar o webhook da instância (`MESSAGES_UPSERT`, header `x-webhook-token`) e conferir com `GET /webhook/find/<instância>`.
+- [ ] Aplicar `supabase/migrations/0017_pending_choices.sql` (ou rodar o `schema_completo.sql`).
+- [ ] Decidir `ANTI_FLOOD_MAX_PER_DAY` (recomendado ligar, ex.: 300) e aquecer o número aos poucos.
+- [ ] **Aceitar o risco de banimento** (Baileys viola os Termos do WhatsApp) e ter um plano B (outro chip).
+- [ ] **Validar numa instância real** (nada disso foi testado contra a Evolution; a documentação é ambígua):
+  - [ ] corpo do `sendText` aceito pela sua versão (`{ number, text }`; se rejeitar, a doc cita `textMessage.text`);
+  - [ ] o payload real de `messages.upsert` (texto, áudio/nota de voz, documento, contato) bate com `src/whatsapp/parser.ts` (`tests/helpers/evolution.ts` reproduz o formato assumido);
+  - [ ] `POST /chat/getBase64FromMediaMessage` aceita `{ message: { key: { id } } }` e devolve `{ base64, mimetype }` (se exigir a mensagem inteira, ajustar `createMediaClient`);
+  - [ ] como chega o telefone quando o remetente aparece como `@lid` (campo `remoteJidAlt`?);
+  - [ ] se botões/listas nativos entregam (`EVOLUTION_NATIVE_INTERACTIVE=true`); caso não, manter o texto numerado;
+  - [ ] que as respostas "1", "2" ao texto numerado chegam como `conversation`/`extendedTextMessage`.
+
+## Histórico (Meta — obsoleto)
+
 Coisas que só uma pessoa da equipe pode fazer. Os agentes acrescentam itens aqui e seguem trabalhando com mocks.
 
 ## Contas e credenciais

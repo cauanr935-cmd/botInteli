@@ -9,17 +9,17 @@ Objetivo: publicar o bot sem custo. Faça os passos na ordem. Cada passo marcado
 
 ## 1. Criar as contas [humano]
 
-1. **Meta for Developers**: crie a conta e um app do tipo Business com o produto WhatsApp.
-2. Crie/use um portfólio empresarial (Business Manager).
-3. **Cloudflare**: crie a conta (plano gratuito).
-4. **Supabase**: crie o projeto (plano gratuito).
+1. **Oracle Cloud**: crie a conta e uma VM (a camada gratuita "Always Free" serve) para rodar a Evolution API em Docker.
+2. **Cloudflare**: crie a conta (plano gratuito).
+3. **Supabase**: crie o projeto (plano gratuito).
+4. Um **chip dedicado** ao bot (nunca o seu número pessoal): o canal é o WhatsApp Web (Baileys), com risco de banimento (ver `CLAUDE.md` e `bot.md`, seção 12).
 5. Defina a API do analisador de áudio: URL, chave, formato de envio e de resposta, limite gratuito/preço por áudio. O adaptador genérico está em `src/audio/analyzer.ts`; se o contrato for diferente, ajuste só esse arquivo.
 
 ## 2. Supabase: aplicar as migrações [humano]
 
 No SQL Editor (ou `supabase db push`), aplique **em ordem** os arquivos de `supabase/migrations/`:
 
-`0001_processed_messages.sql`, `0002_budget.sql`, `0003_conversation.sql`, `0004_registration.sql`, `0005_services.sql`, `0006_last_service.sql`, `0007_audios.sql`, `0008_housekeeping.sql`, `0009_mentorias.sql`, `0010_perfil_duvidas.sql`, `0011_horarios_contato.sql`, `0012_materiais.sql`, `0013_horarios_estruturados.sql`, `0014_perfil_texto.sql`, `0015_mentoria_v2.sql`, `0016_sensitive_events.sql`.
+`0001_processed_messages.sql`, `0002_budget.sql`, `0003_conversation.sql`, `0004_registration.sql`, `0005_services.sql`, `0006_last_service.sql`, `0007_audios.sql`, `0008_housekeeping.sql`, `0009_mentorias.sql`, `0010_perfil_duvidas.sql`, `0011_horarios_contato.sql`, `0012_materiais.sql`, `0013_horarios_estruturados.sql`, `0014_perfil_texto.sql`, `0015_mentoria_v2.sql`, `0016_sensitive_events.sql`, `0017_pending_choices.sql`.
 
 Depois copie `SUPABASE_URL` e a **service key** (Settings > API). A service key é segredo: nunca vai para o git.
 
@@ -36,35 +36,33 @@ O binding `AUDIOS` já está em `wrangler.toml`. Os áudios são dado pessoal (a
 Variáveis não secretas ficam em `[vars]` do `wrangler.toml`. Segredos entram com `wrangler secret put` (nunca no código):
 
 ```
-npx wrangler secret put WHATSAPP_TOKEN
-npx wrangler secret put APP_SECRET
-npx wrangler secret put VERIFY_TOKEN
+npx wrangler secret put EVOLUTION_API_KEY
+npx wrangler secret put EVOLUTION_WEBHOOK_TOKEN
 npx wrangler secret put SUPABASE_SERVICE_KEY
 npx wrangler secret put ANALYZER_API_KEY
 npx wrangler secret put ADMIN_TOKEN
 ```
 
-Valores sensíveis sem valor padrão seguro (configure como secret ou `[vars]`): `PHONE_NUMBER_ID`, `SUPABASE_URL`, `ANALYZER_API_URL`, `PRIVACY_POLICY_URL`.
+Valores sensíveis sem valor padrão seguro (configure como secret ou `[vars]`): `EVOLUTION_URL`, `EVOLUTION_INSTANCE`, `SUPABASE_URL`, `ANALYZER_API_URL`, `PRIVACY_POLICY_URL`.
 
 Todas as variáveis de `.dev.vars.example`:
 
 | Variável | Onde | Observação |
 | --- | --- | --- |
-| `WHATSAPP_TOKEN` | secret | Token permanente de usuário de sistema (Meta). |
-| `PHONE_NUMBER_ID` | secret ou var | Painel WhatsApp > API Setup. |
-| `APP_SECRET` | secret | Segredo do app Meta; valida `X-Hub-Signature-256`. |
-| `VERIFY_TOKEN` | secret | Valor longo e aleatório; o mesmo vai no painel da Meta. |
-| `GRAPH_API_VERSION` | var | Ex.: `v21.0`. |
+| `EVOLUTION_URL` | var ou secret | URL pública (https) da Evolution API na VM, sem barra final. `http://` só vale para `localhost`. |
+| `EVOLUTION_API_KEY` | secret | Chave global da Evolution (`AUTHENTICATION_API_KEY` do container); vai no header `apikey`. |
+| `EVOLUTION_INSTANCE` | var ou secret | Nome da instância criada na Evolution (letras, números, `.`, `-`, `_`). Também é a chave da trava manual e do contador. |
+| `EVOLUTION_WEBHOOK_TOKEN` | secret | Segredo (16+ caracteres) que a Evolution envia no header `x-webhook-token` em cada chamada ao `/webhook`. |
+| `EVOLUTION_NATIVE_INTERACTIVE` | var | `false` (padrão) = botões e listas em texto numerado; `true` = tenta botões/listas nativos (instáveis no Baileys). |
 | `SUPABASE_URL` | var | URL do projeto. |
 | `SUPABASE_SERVICE_KEY` | secret | Service key. |
 | `ANALYZER_API_URL` | var | URL da API de análise de áudio. |
 | `ANALYZER_API_KEY` | secret | Chave da API de análise. |
 | `ADMIN_TOKEN` | secret | Valor longo e aleatório; protege `/admin/*`. |
-| `META_ACCOUNT_TIMEZONE` | var | Fuso da conta Meta (padrão `America/Sao_Paulo`); confirme na Meta. Define a virada do mês. |
-| `BUDGET_SAFETY_MARGIN` | var | Padrão 50, mínimo 10 (corte em 950). |
+| `TIMEZONE` | var | Fuso que define a virada do dia (padrão `America/Sao_Paulo`). `META_ACCOUNT_TIMEZONE` antigo ainda vale como alias. |
+| `ANTI_FLOOD_MAX_PER_DAY` | var | Teto de mensagens enviadas por dia pelo número (proteção contra banimento). `0` = desligado (padrão); máximo 990. |
 | `MAX_BOT_MSGS_PER_USER_PER_DAY` | var | Padrão 12. |
 | `MAX_BOT_MSGS_PER_USER_PER_10MIN` | var | Padrão 4. |
-| `WHATSAPP_FLOW_ID` | var (opcional) | ID do Flow publicado; sem ele o bot usa o cadastro por perguntas. |
 | `PRIVACY_POLICY_URL` | var | URL pública da política de privacidade. |
 | `TERMS_VERSION` | var | Versão do termo (ex.: `2025-01`); gravada com o consentimento. |
 | `MAX_AUDIO_BYTES` | var | Padrão 16000000. |
@@ -76,13 +74,23 @@ Todas as variáveis de `.dev.vars.example`:
 
 Para desenvolvimento local copie `.dev.vars.example` para `.dev.vars` (ignorado pelo git).
 
-## 5. Publicar o Flow de cadastro [humano]
+## 5. Subir a Evolution API na VM [humano]
 
-1. WhatsApp Manager > Flows > Criar Flow (categoria Cadastro/Sign up) e cole `flows/cadastro.json` no editor JSON.
-2. Troque a `url` do componente OptIn pelo valor real de `PRIVACY_POLICY_URL`.
-3. Se o editor reclamar da versão do Flow JSON (`6.2`), use a versão mais recente aceita e confira TextInput/OptIn/Footer.
-4. Teste na pré-visualização e **publique** (rascunho não pode ser enviado).
-5. Copie o ID para `WHATSAPP_FLOW_ID`. O Flow pede nome completo e aceite; depois, o bot pede um áudio de apresentação. Se mudar os campos do formulário, edite `src/registration/fields.ts`, `flows/cadastro.json` e crie uma migração com as colunas.
+A Evolution (v2, integração Baileys) roda em Docker na VM Oracle. Fixe uma **versão exata** da imagem (não use `latest`): os formatos de botão, lista e mídia mudam entre versões.
+
+1. Na VM, suba o container com `AUTHENTICATION_API_KEY` (esse é o valor de `EVOLUTION_API_KEY`), banco/cache conforme a doc da versão escolhida e HTTPS na frente (proxy reverso com certificado). Libere só as portas necessárias.
+2. Crie a instância: `POST {EVOLUTION_URL}/instance/create` com `{"instanceName": "<EVOLUTION_INSTANCE>", "integration": "WHATSAPP-BAILEYS", "qrcode": true}` e o header `apikey`.
+3. Leia o QR Code (`GET /instance/connect/<instância>`) com o WhatsApp do **chip dedicado**: Aparelhos conectados > Conectar um aparelho.
+4. Configure o webhook da instância (confira o formato exato na doc da sua versão e com `GET /webhook/find/<instância>`):
+
+```
+POST {EVOLUTION_URL}/webhook/set/<EVOLUTION_INSTANCE>
+{ "webhook": { "enabled": true, "url": "https://<seu-worker>.workers.dev/webhook",
+  "headers": { "x-webhook-token": "<EVOLUTION_WEBHOOK_TOKEN>" },
+  "byEvents": false, "base64": false, "events": ["MESSAGES_UPSERT"] } }
+```
+
+Só `MESSAGES_UPSERT` interessa (status de entrega e preço são ignorados: não existe cobrança por conversa).
 
 ## 6. Deploy
 
@@ -92,7 +100,7 @@ npm run build        # dry-run offline, valida o bundle
 npx wrangler deploy
 ```
 
-O cron diário (`0 6 * * *`, UTC) mantém o Supabase ativo, apaga `processed_messages` com mais de 7 dias, devolve a `AWAIT_AUDIO` conversas presas em `PROCESSING_AUDIO` há mais de 10 minutos (sem enviar mensagem) e registra o uso do mês (`reserved_count` / `stop_at`).
+O cron diário (`0 6 * * *`, UTC) mantém o Supabase ativo, apaga `processed_messages` com mais de 7 dias, devolve a `AWAIT_AUDIO` conversas presas em `PROCESSING_AUDIO` há mais de 10 minutos (sem enviar mensagem) e registra o uso do dia do limitador anti-flood (`reserved_count` / `stop_at`).
 
 ## 6.1 Mentorias: painel e API de integração [humano]
 
@@ -109,40 +117,39 @@ Painel: `https://<seu-worker>.workers.dev/painel` (login; bloqueio por tentativa
 
 Cada mentoria consome cerca de 6 mensagens do bot; por isso `MAX_BOT_MSGS_PER_USER_PER_10MIN` e `..._PER_DAY` ficam em 8 e 40 no `wrangler.toml`.
 
-## 7. Registrar o webhook na Meta [humano]
+## 7. Conferir o webhook [humano]
 
-1. No app da Meta > WhatsApp > Configuration, informe a Callback URL `https://<seu-worker>.workers.dev/webhook` e o `VERIFY_TOKEN`.
-2. Assine o campo `messages` (traz mensagens e status).
-3. Confira `GET https://<seu-worker>.workers.dev/health` (deve responder `ok`).
+1. `GET https://<seu-worker>.workers.dev/health` deve responder `ok`.
+2. Sem o header, `POST /webhook` deve responder `401`; com `x-webhook-token` correto, `200`.
+3. Mande uma mensagem de outro celular para o número do bot e acompanhe `npx wrangler tail`.
 
-## 8. Testar com o número de teste da Meta [humano]
+## 8. Testar com poucos números [humano]
 
-Use primeiro o **número de teste** da Meta: envia para até **5 destinatários** cadastrados. Percorra: boas-vindas, consentimento, cadastro (Flow), menu, resposta pronta, envio de áudio. Acompanhe `GET /admin/budget` (header `Authorization: Bearer <ADMIN_TOKEN>`) e os logs (`npx wrangler tail`).
+Antes de divulgar, teste com 2 ou 3 contatos seus: boas-vindas, consentimento, cadastro, menu (texto numerado: responder `1`, `2`...), resposta pronta e envio de áudio. Acompanhe `GET /admin/budget` (header `Authorization: Bearer <ADMIN_TOKEN>`) e os logs. **Valide na sua versão da Evolution** os pontos não documentados listados em `docs/PENDENCIAS_HUMANAS.md` (formato do `messages.upsert`, resposta do `getBase64FromMediaMessage`, `@lid`).
 
-## 9. Registrar o chip (só depois dos testes) [humano]
+## 9. Aquecer o número (anti-ban) [humano]
 
-1. Compre um chip pré-pago **novo**, nunca ativado no WhatsApp nem no WhatsApp Business.
-2. Registre o número na API (código por SMS ou ligação) e defina o PIN de duas etapas.
-3. Mantenha recargas no chip para a operadora não cancelar a linha.
-4. Atualize `PHONE_NUMBER_ID` e `WHATSAPP_TOKEN` para o número real.
+1. Use um chip **novo e dedicado**, com conta de uso real por alguns dias antes de ligar o bot.
+2. Aumente o volume aos poucos; ligue o limitador (`ANTI_FLOOD_MAX_PER_DAY`, por exemplo 300) e ajuste conforme o uso.
+3. O bot só responde a quem escreveu primeiro e nunca envia mensagem em massa (R2). Não mude isso.
+4. Mantenha recargas no chip para a operadora não cancelar a linha.
 
 ## Checklist de produção
 
-- [ ] Empresa verificada no Meta Business Manager.
+- [ ] Evolution fixada numa versão exata, atrás de HTTPS, com `AUTHENTICATION_API_KEY` forte; instância conectada pelo QR Code.
+- [ ] Webhook da instância com `x-webhook-token` igual a `EVOLUTION_WEBHOOK_TOKEN`; `POST /webhook` sem token responde 401.
 - [ ] Política de privacidade publicada; `PRIVACY_POLICY_URL` e `TERMS_VERSION` definidos.
-- [ ] Conferir o cadastro publicado: nome completo e aceite no Flow; perguntas pessoais respondidas por áudio depois do formulário.
-- [ ] Fuso da conta de mensagens confirmado na Meta (`META_ACCOUNT_TIMEZONE`).
-- [ ] **Não cadastrar forma de pagamento no Billing Hub.** Sem forma de pagamento, a Meta não entrega mensagens além da franquia: segunda proteção, além do disjuntor (950 de 1.000).
-- [ ] Migrações 0001 a 0015 aplicadas; bucket R2 criado com retenção definida.
+- [ ] Fuso conferido (`TIMEZONE`).
+- [ ] **Risco de banimento aceito** (Baileys é não oficial): chip dedicado, número aquecido, `ANTI_FLOOD_MAX_PER_DAY` definido.
+- [ ] Migrações 0001 a 0017 aplicadas; bucket R2 criado com retenção definida.
 - [ ] Contrato do analisador definido e testado.
-- [ ] Monitorar `GET /admin/budget` (uso do mês, disjuntor) e os logs `warn` (80% do corte) e `critical` (disjuntor aberto).
-- [ ] Se o disjuntor manual abrir por sinal de cobrança, investigue antes de liberar pelo endpoint `POST /admin/budget/unlock`.
+- [ ] Monitorar `GET /admin/budget` (uso do dia, trava) e os logs `warn` (80% do teto) e `critical` (teto atingido). A trava manual pode ser ligada pelo banco e só é liberada por `POST /admin/budget/unlock`.
 
 ## IA como supervisor do bot (opcional: Groq ou xAI Grok)
 
 O bot funciona sozinho. Com uma chave de IA (`AI_API_KEY`), um modelo **intervém** quando o bot não entende a pessoa ou pode decidir errado. A API é no formato OpenAI (`chat/completions`); o provedor sai do prefixo da chave: `gsk_…` = **Groq**, `xai-…` = **xAI Grok**.
 
-1. **Supervisor de intenção** (`src/ai/agent.ts`, `ROUTES`): estados "o que você quer fazer?", Sim/Não da dúvida, papel e o texto da dúvida. Só é consultado quando o bot gerou dica/silêncio (ou, no texto da dúvida, sempre). `sair`, `menu`, `oi`, `sim` e `não` **nunca** vão para a IA. A IA só escolhe uma opção de lista fechada, que vira o mesmo botão que a pessoa poderia ter tocado (mesmas travas de orçamento, anti-spam e consentimento).
+1. **Supervisor de intenção** (`src/ai/agent.ts`, `ROUTES`): estados "o que você quer fazer?", Sim/Não da dúvida, papel e o texto da dúvida. Só é consultado quando o bot gerou dica/silêncio (ou, no texto da dúvida, sempre). `sair`, `menu`, `oi`, `sim` e `não` **nunca** vão para a IA. A IA só escolhe uma opção de lista fechada, que vira o mesmo botão que a pessoa poderia ter tocado (mesmas travas de anti-flood, anti-spam e consentimento).
 2. **Horários livres**: no serviço *Horários* a IA lê o texto livre ("segunda e quarta à tarde", "de seg a sex 19h às 21h") e grava as faixas em `users.availability_slots` (`[{day, start, end}]`), além do texto original em `users.availability`. Se a IA falhar ou não estiver configurada, o texto é guardado como veio; se a IA ler e não achar horários, o bot pede de novo (1 dica).
 3. **Nome**: a IA avalia se o nome parece real (apelido, objeto, personagem e nome de uma palavra só são suspeitos: "Zé do Frango", "Baralho da Silva", "Sofá", "Antônio"). Suspeito => o bot pergunta "é mesmo o seu nome?" (Sim segue; Não pede o nome de novo). Sem IA, só o nome de uma palavra é confirmado.
 4. **Turma**: sempre com número (T27, T26, T24...). Só letras ou número fora do padrão (4+ dígitos) pedem de novo. Regra do código, sem IA.

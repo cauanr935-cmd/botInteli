@@ -1,6 +1,6 @@
 # Bot WhatsApp + Chat Web — documentação técnica
 
-> Estado em 2026-11-10. Este documento descreve o sistema como está implementado no código, não como foi planejado.
+> Estado em 2026-11-12 (canal WhatsApp migrado da Cloud API da Meta para a Evolution API/Baileys). Este documento descreve o sistema como está implementado no código, não como foi planejado.
 > Regras de projeto e decisões: `CLAUDE.md`, `docs/PLANO.md`, `docs/DECISOES.md`.
 
 ## 1. Visão geral
@@ -16,26 +16,27 @@ O bot tem **dois canais de entrada** que usam o **mesmo motor de conversa**, sem
 
 | Canal | Quando usar | Entrada | Saída |
 |---|---|---|---|
-| **WhatsApp (Cloud API da Meta)** | Produção. Depende de o webhook estar liberado/configurado na Meta. | `POST /webhook` (assinado) | `POST graph.facebook.com/.../messages` |
-| **Chat web (simulador)** | Teste e demonstração enquanto a Meta não libera. Sem cadastro de usuário. | Página `/chat` e `/chat/api/*` | Capturada e desenhada na própria página |
+| **WhatsApp (Evolution API, modo Baileys)** | Produção. Depende da Evolution rodando na VM e da instância conectada pelo QR Code. | `POST /webhook` (header `x-webhook-token`) | `POST {EVOLUTION_URL}/message/sendText/{instância}` |
+| **Chat web (simulador)** | Teste e demonstração sem WhatsApp. Sem cadastro de usuário. | Página `/chat` e `/chat/api/*` | Capturada e desenhada na própria página |
 
 ```
                   ┌────────────── Cloudflare Worker (bot-whatsapp) ──────────────┐
-  WhatsApp ──►    │  POST /webhook ──► verifica assinatura ─┐                    │
-  (Meta)          │                                          ▼                    │
-                  │                                  processEvents()              │
-  Navegador ──►   │  /chat, /chat/api/* ──► monta o mesmo ──►  (idempotência,    │ ──► Supabase (Postgres)
-  (página web)    │  evento do webhook                          touchUser)        │ ──► R2 (áudios + histórico do chat)
-                  │                                                 ▼             │ ──► API externa de áudio
-                  │                                       createEventHandler()    │
-                  │                                   motor de conversa (decide)  │
-                  │                                                 ▼             │
-                  │                                         sendGuarded()  ───────┼──► Graph API da Meta  (canal WhatsApp)
-                  │                                                 └─────────────┼──► função local → tela (canal chat web)
+  WhatsApp ──►    │  POST /webhook ──► confere x-webhook-token ─┐                │
+  (celular)       │                                              ▼                │
+     ▲            │                                      processEvents()          │
+     │ QR Code    │  Navegador ──► /chat, /chat/api/* ──► (idempotência key.id,   │ ──► Supabase (Postgres)
+  Evolution API   │  (página web)  monta o mesmo evento   touchUser, "2"→opção)  │ ──► R2 (áudios + histórico do chat)
+  (Baileys, VM    │                                                ▼              │ ──► API externa de áudio
+   Oracle/Docker) │                                      createEventHandler()     │
+     ▲            │                                  motor de conversa (decide)   │
+     │            │                                                ▼              │
+     └────────────┼──────────────────────────── sendGuarded() ────────────────────┤
+   sendText etc.  │            └─► evolutionClient (canal WhatsApp)               │
+                  │            └─► função local → tela   (canal chat web)         │
                   └───────────────────────────────────────────────────────────────┘
 ```
 
-A única diferença entre os canais está nas bordas: de onde vem o evento e para onde vai a mensagem de saída. Para o chat web, `sendGuarded` recebe uma função `fetch` local no lugar da Graph API. Por isso todas as travas continuam valendo (janela de 24h, limites por pessoa, orçamento mensal).
+A única diferença entre os canais está nas bordas: de onde vem o evento e para onde vai a mensagem de saída. Para o chat web, `sendGuarded` recebe um **transporte** local no lugar da Evolution. Por isso as travas continuam valendo (trava manual, contato conhecido, limites por pessoa, anti-flood).
 
 ## 2. Stack
 
@@ -46,7 +47,7 @@ A única diferença entre os canais está nas bordas: de onde vem o evento e par
 | Agendador | Cron Trigger do Workers (`0 6 * * *`, 06:00 UTC) |
 | Armazenamento de arquivos | Cloudflare R2, bucket `bot-whatsapp-audios` (binding `AUDIOS`) |
 | Banco | Supabase (Postgres) via REST (PostgREST), sem biblioteca cliente |
-| Mensageria | WhatsApp Cloud API oficial da Meta (Graph API `v21.0`, versão vinda de env) |
+| Mensageria | **Evolution API v2 (integração Baileys / WhatsApp Web)**, em Docker numa VM Oracle Cloud; o Worker só fala HTTP com ela (`src/whatsapp/evolutionClient.ts`) |
 | Análise de áudio | API externa HTTP (adaptador genérico em `src/audio/analyzer.ts`) |
 | Testes | Vitest; PGlite (Postgres em WASM) para SQL; tudo mockado, sem rede real |
 | Ferramentas | Wrangler 4, ESLint, `tsc --noEmit` |
@@ -60,13 +61,15 @@ src/
   index.ts                 Entrada do Worker: roteia /health, /webhook, /admin/*, /chat*; cron
   config.ts                Lê e valida variáveis de ambiente (recusa subir se inválidas)
   webhook/
-    handler.ts             GET (verificação) e POST (assinatura, parse, idempotência) do webhook
-    events.ts              Fiação: status → trava de orçamento; mensagem → motor → sendGuarded
+    handler.ts             POST do webhook: token, parse, idempotência (key.id), "2" → opção do menu
+    events.ts              Fiação: mensagem → motor → sendGuarded
   whatsapp/
-    client.ts              ÚNICO arquivo que conhece a Graph API; sendGuarded; cliente de mídia
-    parser.ts, types.ts    Payload da Meta → eventos tipados
-    builders.ts            Monta texto, botões e lista respeitando os limites da Meta
-    signature.ts           HMAC-SHA256 do corpo bruto (X-Hub-Signature-256)
+    client.ts              sendGuarded (único ponto de saída: travas, anti-flood, log) e contratos de mídia
+    evolutionClient.ts     ÚNICO arquivo que conhece a Evolution API (envio, tradução, download de mídia)
+    choices.ts             Botões/listas ⇄ texto numerado (funções puras)
+    parser.ts, types.ts    Payload `messages.upsert` da Evolution → eventos tipados
+    builders.ts            Monta texto, botões e lista (formato interno, também usado pelo chat web)
+    signature.ts           Token compartilhado do webhook (comparação em tempo constante)
   conversation/
     machine.ts             Máquina de estados declarativa + decide() PURA (sem I/O)
     engine.ts              Aplica decide(): lê/grava estado, limites, envia
@@ -85,12 +88,12 @@ scripts/simulate.ts        Simulador sem rede (400 pessoas, repetição, limites
 
 ## 4. Como uma mensagem é processada
 
-1. **Entrada.** O evento chega pelo webhook (assinado) ou pelo chat web.
-2. **Idempotência.** `processed_messages` guarda o `wamid`. O mesmo ID recebido duas vezes é ignorado, porque a Meta reenvia webhooks.
-3. **Atualização do usuário.** `touch_user` grava a hora da última mensagem da pessoa. É isso que abre a janela de 23h30 para responder.
+1. **Entrada.** O evento chega pelo webhook (com o token da Evolution) ou pelo chat web.
+2. **Idempotência.** `processed_messages` guarda o `key.id` do Baileys (o antigo `wamid`). O mesmo ID recebido duas vezes é ignorado, porque a Evolution pode reenviar eventos.
+3. **Atualização do usuário e resposta numérica.** `touch_user` grava a hora da última mensagem da pessoa. Também é o que marca a pessoa como "contato conhecido": o bot só escreve a quem já escreveu a ele (não há janela de 24h no Baileys).
 4. **Motor.** `decide()` é uma função pura: dado o estado, a mensagem e os contadores, devolve as respostas e o próximo estado. `engine.ts` aplica o resultado com controle de concorrência por versão (compare-and-swap em `users.version`).
 5. **Envio.** Toda mensagem de saída passa por `sendGuarded` (seção 6).
-6. **Resposta HTTP.** O webhook responde **200** sempre que a assinatura é válida, mesmo com o disjuntor aberto. Se devolvesse erro, a Meta reenviaria e poderia desativar o webhook.
+6. **Resposta HTTP.** O webhook responde **200** sempre que o token é válido, mesmo com a trava ou o teto abertos. Se devolvesse erro, a Evolution reenfileiraria os eventos.
 
 ### 4.1 Estados da conversa
 
@@ -127,7 +130,7 @@ Nenhum dado de cadastro nem áudio é guardado antes do consentimento (`consent_
 
 ```
 áudio recebido → confere consentimento → valida tipo (ogg, opus, mp3, m4a, aac, amr)
-  → baixa a mídia (URL da Meta vale 5 min; renova 1 vez se expirar)
+  → baixa a mídia (Evolution: `getBase64FromMediaMessage`, sem URL temporária)
   → grava no R2: audios/<hash do telefone>/<AAAA-MM>/<uuid>.<ext>
   → registra em `audios` → POST na API de análise → resposta única com botão "Menu"
 ```
@@ -150,8 +153,9 @@ Se `ANALYZER_API_URL`/`ANALYZER_API_KEY` não estiverem configurados, o pipeline
 |---|---|
 | `processed_messages` | Idempotência (`wamid`); limpeza após 7 dias pelo cron |
 | `users` | Telefone, estado, versão, última mensagem, dados de cadastro, consentimento |
-| `message_budget` | Contador mensal por número (`reserved_count`, `stop_at`, `tripped`) |
-| `budget_lock` | Disjuntor manual |
+| `message_budget` | Contador anti-flood **por dia** da instância (`reserved_count`, `stop_at`, `tripped`; colunas legadas `phone_number_id`/`month_key`) |
+| `budget_lock` | Trava manual |
+| `pending_choices` | Opções do último menu enviado como texto numerado, por hash do telefone (ver seção 9) |
 | `outbound_log` | Registro de cada envio (telefone só em hash) |
 | `services` | Itens do menu (id, título, descrição, `requires_audio`, ordem, ativo) |
 | `canned_responses` | Textos prontos (chave → texto) |
@@ -177,22 +181,23 @@ values ('precos', 'Preços', 'Veja nossos preços', false, true, 40);
 insert into canned_responses (key, text) values ('service_precos', 'Nossos preços: ...');
 ```
 
-Limites da Meta que o código valida e recusa exceder: lista até 10 linhas (título ≤ 24, descrição ≤ 72), até 3 botões (título ≤ 20), corpo ≤ 1024 caracteres.
+Limites de mensagens interativas (herdados da Meta, mantidos nos builders porque o chat web renderiza o mesmo formato) que o código valida e recusa exceder: lista até 10 linhas (título ≤ 24, descrição ≤ 72), até 3 botões (título ≤ 20), corpo ≤ 1024 caracteres.
 
-## 6. Orçamento e segurança de custo (R1)
+## 6. Anti-flood e proteção do número (R1)
 
-A Meta dá 1.000 conversas de serviço grátis por número e mês. O sistema **nunca** chega perto da cobrança:
+No canal oficial da Meta existia franquia de 1.000 conversas grátis, janela de 24h e status `billable`. **No Baileys nada disso existe.** A semântica de "custo Meta" foi substituída por **proteção anti-ban/anti-flood**; a infraestrutura (reserva atômica, contador, trava manual, `outbound_log`, endpoints admin) foi mantida e reaproveitada.
 
-- `META_FREE_TIER_PER_MONTH = 1000` é constante no código.
-- `STOP_AT = 1000 - BUDGET_SAFETY_MARGIN` (margem padrão 50, mínima 10 → corte em 950).
-- `sendGuarded` é a **única** função que envia e vive no **único** arquivo que conhece a Graph API (um teste de arquitetura reprova qualquer violação). Antes de enviar:
-  1. Recusa `template` (não são grátis).
-  2. Só envia se a última mensagem da pessoa tem menos de **23h30**.
-  3. Respeita a trava manual (falha fechada).
-  4. **Reserva atômica** de uma vaga no contador (`reserve_outbound_slot_detail`); sem vaga, não envia. A vaga não é devolvida se o envio falhar.
-- Ao atingir `STOP_AT`, o disjuntor abre: nada sai até virar o mês (fuso `META_ACCOUNT_TIMEZONE`). Log `warn` a 80% e `critical` ao abrir.
-- Status webhook com `billable: true`, `type: "regular"` ou `category` ≠ `"service"` abre a **trava manual** na hora. Só um humano fecha (endpoint admin).
-- Se o banco estiver fora, **não envia**.
+`sendGuarded` continua sendo a **única** função que envia (`src/whatsapp/client.ts`); o transporte HTTP vive no **único** arquivo que conhece a Evolution (`src/whatsapp/evolutionClient.ts`; um teste de arquitetura reprova qualquer violação). Antes de enviar:
+
+1. Recusa o que o canal não entrega (`template`, Flow): erro `unsupported_type`, sem gastar vaga.
+2. Respeita a **trava manual** (falha fechada).
+3. **Nunca escreve para quem nunca escreveu ao bot** (`blocked_unknown_contact`): mensagem fria a desconhecido é o maior gatilho de banimento. Não é a antiga janela de 24h: vale para qualquer pessoa que já tenha falado com o bot, em qualquer época.
+4. **Limitador anti-flood opcional**: `ANTI_FLOOD_MAX_PER_DAY` (0 = desligado, máximo 990). Reserva atômica de uma vaga no contador **do dia** (fuso `TIMEZONE`); sem vaga, não envia. A vaga não é devolvida se o envio falhar.
+5. Envia; grava `outbound_log`.
+
+- Log `warn` a 80% do teto e `critical` ao atingi-lo; o contador zera à meia-noite do fuso. Se o banco estiver fora, **não envia**.
+- A trava manual é ligada por um humano (ex.: direto no banco) e só fecha pelo endpoint admin. **Não existe mais gatilho automático por `billable`**: status de entrega/preço da Evolution são ignorados.
+- O webhook continua respondendo **200** com a trava ou o teto abertos: "quebrar" = parar de enviar, não derrubar o endpoint.
 
 ## 7. API do Worker
 
@@ -201,14 +206,13 @@ URL de produção: `https://bot-whatsapp.bot-whatsaap-inteli.workers.dev`
 | Rota | Método | Auth | Descrição |
 |---|---|---|---|
 | `/health` | GET | — | Retorna `ok` |
-| `/webhook` | GET | `hub.verify_token` | Verificação da Meta; devolve `hub.challenge` (200) ou 403 |
-| `/webhook` | POST | `X-Hub-Signature-256` | Eventos da Meta; 401 se a assinatura for inválida; 200 caso contrário |
-| `/admin/budget` | GET | `Authorization: Bearer ADMIN_TOKEN` | Mês, contador, `stop_at`, disjuntor e trava manual |
+| `/webhook` | POST | `x-webhook-token` (ou `Authorization: Bearer`) | Eventos da Evolution (`messages.upsert`); 401 se o token for inválido; 200 caso contrário |
+| `/admin/budget` | GET | `Authorization: Bearer ADMIN_TOKEN` | Dia (`period`), contador, `stop_at`, se o limitador está ligado, disjuntor e trava manual |
 | `/admin/budget/unlock?confirm=EU_ENTENDO_O_RISCO` | POST | Bearer `ADMIN_TOKEN` | Fecha a trava manual (cabeçalho opcional `X-Admin-User`) |
 | `/chat?key=ADMIN_TOKEN` | GET | `key` | Página do chat web |
 | `/chat/api/*` | vários | `X-Chat-Key: ADMIN_TOKEN` ou `?key=` | API do chat (seção 8) |
 
-Qualquer outro caminho: 404. Método errado em `/webhook`: 405.
+Qualquer outro caminho: 404. Método diferente de POST em `/webhook`: 405 (não há mais handshake `GET` da Meta).
 
 ## 8. Chat web (simulador)
 
@@ -273,26 +277,31 @@ Cada requisição de envio é **síncrona**: só responde quando o bot terminou 
 
 ### 8.2 Diferenças em relação ao WhatsApp real
 
-- Não há assinatura nem webhook da Meta: a entrada é autenticada pela chave.
-- O envio para a Meta é substituído por uma função local; nenhuma mensagem real sai. Mesmo assim, cada resposta **consome uma vaga** do contador mensal e entra no `outbound_log`.
-- O Flow de cadastro não é renderizado; o cadastro usa o modo sem Flow (botão **Aceito** + pergunta).
+- Não há webhook: a entrada é autenticada pela chave.
+- O envio para a Evolution é substituído por um transporte local; nenhuma mensagem real sai. Mesmo assim, cada resposta passa pelas travas e entra no `outbound_log` (e consome vaga do anti-flood, se ligado).
+- O chat web continua recebendo botões e listas **de verdade** (a tela os desenha); só o WhatsApp usa o texto numerado.
 - Reiniciar o cadastro do zero exige apagar o usuário `5500000000001` em `users` no Supabase.
 
-## 9. Integração com o WhatsApp (Meta)
+## 9. Integração com a Evolution API
 
-1. **Webhook**: no painel da Meta (WhatsApp > Configuração > Webhook):
-   - URL de callback: `https://bot-whatsapp.bot-whatsaap-inteli.workers.dev/webhook`
-   - Token de verificação: o mesmo valor do secret `VERIFY_TOKEN`
-   - Depois de verificar, assine o campo `messages`.
-2. **Credenciais** no Worker: `WHATSAPP_TOKEN`, `PHONE_NUMBER_ID`, `APP_SECRET` (secrets).
-3. **Número de teste** da Meta: envia para até 5 números cadastrados; use-o antes de qualquer número real.
-4. **Opcional**: o MCP "WhatsApp Business Tools" da Meta (`https://mcp.facebook.com/whatsapp_business_tools`) configura o webhook por ferramentas do agente (`whatsapp_biz_configure_webhooks`, `whatsapp_biz_subscribe_webhook`). Está em beta e exige login OAuth e acesso de administrador ao negócio.
+Passo a passo de instalação em `docs/DEPLOY.md` (seção 5). Resumo:
 
-Verificação rápida do webhook (deve devolver `200` e o número enviado):
+1. **Evolution v2** em Docker na VM Oracle, **versão fixada**, atrás de HTTPS. Instância `WHATSAPP-BAILEYS` conectada pelo QR Code ao **chip dedicado**.
+2. **Webhook da instância** → `POST https://<worker>/webhook`, evento `MESSAGES_UPSERT`, com o header `x-webhook-token: <EVOLUTION_WEBHOOK_TOKEN>`. A Evolution não assina o corpo: o segredo compartilhado é a autenticação (comparação em tempo constante).
+3. **Entrada** (`src/whatsapp/parser.ts`): o `messages.upsert` vira os mesmos eventos de sempre (texto, resposta de botão/lista, áudio, documento, contato, não suportado). `key.id` é o id da mensagem (idempotência, no lugar do `wamid`); `fromMe`, grupos, status e canais são ignorados. O telefone vem do `remoteJid` (`@s.whatsapp.net`); para `@lid` usa o JID alternativo com número, se vier, ou o JID completo.
+4. **Saída** (`src/whatsapp/evolutionClient.ts`), header `apikey` em tudo:
 
-```bash
-curl -i "https://bot-whatsapp.bot-whatsaap-inteli.workers.dev/webhook?hub.mode=subscribe&hub.verify_token=SEU_VERIFY_TOKEN&hub.challenge=12345"
-```
+| Tipo do motor | Chamada |
+|---|---|
+| texto | `POST /message/sendText/{instância}` `{ number, text }` |
+| botões / lista (padrão) | **texto numerado** em `sendText` (1 mensagem): `1) Sim  2) Não  Responda com o número da opção.` |
+| botões / lista (`EVOLUTION_NATIVE_INTERACTIVE=true`) | `POST /message/sendButtons` e `sendList` |
+
+   O Baileys tem suporte instável a botões e listas (issues abertas de mensagens com 201 que nunca chegam), por isso o padrão é o fallback. Para a resposta "2" voltar ao `id` da opção, o bot guarda as opções enviadas em `pending_choices` (por hash do telefone, validade de 12 h). Qualquer texto comum enviado depois **apaga** as opções (um "1" solto não vira a opção 1 de um menu velho). A resposta é aceita como número (`2`, `2)`, `opção 2`) ou o título exato.
+5. **Mídia** (`createMediaClient`): sem URL temporária; o download é `POST /chat/getBase64FromMediaMessage/{instância}`. O pipeline de áudio e o R2 não mudaram.
+6. **Flows** (`nfm_reply`) não existem no Baileys: o cadastro usa sempre o modo por perguntas.
+
+**Pontos não verificados contra uma instância real** (documentação da Evolution ambígua; validar na sua versão): corpo do `sendText` (`text` x `textMessage.text`), formato exato de `sendButtons`/`sendList`, campos do `messages.upsert`, resposta do `getBase64FromMediaMessage` e comportamento de `@lid`. Veja `docs/PENDENCIAS_HUMANAS.md`.
 
 ## 10. Configuração
 
@@ -300,17 +309,19 @@ Variáveis obrigatórias (o Worker recusa processar `/webhook` e `/admin` se fal
 
 | Variável | Onde | Descrição |
 |---|---|---|
-| `WHATSAPP_TOKEN` | secret | Token da Cloud API |
-| `PHONE_NUMBER_ID` | secret | ID do número comercial |
-| `APP_SECRET` | secret | Valida a assinatura do webhook |
-| `VERIFY_TOKEN` | secret | Verificação do webhook |
+| `EVOLUTION_URL` | var/secret | URL https da Evolution (sem barra final; `http://` só para localhost) |
+| `EVOLUTION_API_KEY` | secret | Chave da Evolution (header `apikey`) |
+| `EVOLUTION_INSTANCE` | var/secret | Nome da instância (também a chave da trava e do contador) |
+| `EVOLUTION_WEBHOOK_TOKEN` | secret | Segredo (16+ caracteres) enviado pela Evolution no header `x-webhook-token` |
 | `SUPABASE_URL` | secret | **Só a base**: `https://<ref>.supabase.co` (sem `/rest/v1/`) |
 | `SUPABASE_SERVICE_KEY` | secret | Chave de serviço do Supabase |
 | `ADMIN_TOKEN` | secret | Endpoints `/admin/*` e o chat web |
 | `PRIVACY_POLICY_URL` | secret | Citada no termo de consentimento |
-| `GRAPH_API_VERSION`, `TERMS_VERSION` | `[vars]` | Versão da Graph API; versão do termo |
+| `TERMS_VERSION` | `[vars]` | Versão do termo |
 
-Opcionais: `ANALYZER_API_URL` + `ANALYZER_API_KEY` (devem ser configuradas juntas), `WHATSAPP_FLOW_ID`, `META_ACCOUNT_TIMEZONE` (`America/Sao_Paulo`), `BUDGET_SAFETY_MARGIN` (50), `MAX_BOT_MSGS_PER_USER_PER_DAY` (12), `MAX_BOT_MSGS_PER_USER_PER_10MIN` (4), `MAX_AUDIO_BYTES` (16000000), `ANALYZER_TIMEOUT_MS` (8000), `CHAT_SIM_ENABLED`.
+Opcionais: `ANALYZER_API_URL` + `ANALYZER_API_KEY` (devem ser configuradas juntas), `EVOLUTION_NATIVE_INTERACTIVE` (`false`), `ANTI_FLOOD_MAX_PER_DAY` (0 = desligado, máx. 990), `TIMEZONE` (`America/Sao_Paulo`; `META_ACCOUNT_TIMEZONE` ainda vale como alias), `MAX_BOT_MSGS_PER_USER_PER_DAY` (12), `MAX_BOT_MSGS_PER_USER_PER_10MIN` (4), `MAX_AUDIO_BYTES` (16000000), `ANALYZER_TIMEOUT_MS` (8000), `CHAT_SIM_ENABLED`.
+
+**Obsoletas (não são mais lidas nem exigidas):** `WHATSAPP_TOKEN`, `PHONE_NUMBER_ID`, `APP_SECRET`, `VERIFY_TOKEN`, `GRAPH_API_VERSION`, `BUDGET_SAFETY_MARGIN`, `WHATSAPP_FLOW_ID`.
 
 Segredos entram com `npx wrangler secret put NOME` e **nunca** vão para o código ou o git. Localmente ficam em `.dev.vars` (modelo: `.dev.vars.example`). Para enviar um secret a partir do `.dev.vars` sem colar:
 
@@ -328,43 +339,45 @@ npx wrangler tail --format json   # logs em tempo real
 npx wrangler secret list          # confere quais secrets existem
 ```
 
-Cron diário (06:00 UTC): nunca envia mensagem. Mantém o banco ativo (`ping`), apaga `processed_messages` com mais de 7 dias, libera conversas presas em `PROCESSING_AUDIO` há mais de 10 min e registra o uso do mês.
+Cron diário (06:00 UTC): nunca envia mensagem. Mantém o banco ativo (`ping`), apaga `processed_messages` com mais de 7 dias, libera conversas presas em `PROCESSING_AUDIO` há mais de 10 min e registra o uso do dia do limitador anti-flood.
 
 Logs são JSON estruturado, com telefone mascarado (`5511*****1234`) e **sem** conteúdo de mensagem nem dados de cadastro.
 
 ## 12. Segurança e LGPD
 
-- Assinatura do webhook: HMAC-SHA256 do corpo **bruto** com comparação em tempo constante; inválida → 401 e nada é processado.
+- Autenticação do webhook: segredo compartilhado (`EVOLUTION_WEBHOOK_TOKEN`) em header, comparação em tempo constante; ausente ou inválido → 401 e nada é processado. O corpo do webhook traz a `apikey` da Evolution: nunca o registre em log (o código não registra corpos).
 - Admin e chat web exigem `ADMIN_TOKEN`. A URL do chat contém a chave: não a compartilhe.
 - Telefones aparecem só mascarados nos logs e em hash no R2 e em `outbound_log`.
 - Nenhum cadastro nem áudio antes do consentimento explícito; os áudios são dado pessoal (a voz identifica a pessoa), então defina uma política de retenção no bucket.
-- Só a API oficial da Meta. Bibliotecas não oficiais (Baileys, whatsapp-web.js etc.) são proibidas.
+- **Canal não oficial (Baileys).** Usar o WhatsApp Web por QR Code **viola os Termos de Serviço do WhatsApp** e pode levar ao **banimento do número**. Política de uso para reduzir o risco: chip dedicado e aquecido; o bot só responde a quem escreveu primeiro; nunca envia mensagem em massa nem para desconhecidos; 1 resposta por entrada; limites por pessoa (R2); limitador anti-flood diário e trava manual. O Worker **não** embute nenhuma biblioteca de WhatsApp (o Baileys roda dentro da Evolution, na VM). Não há contrato nem suporte: a instância pode cair e exigir novo QR Code.
 
 ## 13. Testes
 
-`npm run verify` roda tudo sem rede real (Graph API, Supabase, R2 e analisador são mockados ou em memória). Destaques:
+`npm run verify` roda tudo sem rede real (Evolution, Supabase, R2 e analisador são mockados ou em memória). Destaques:
 
-- `tests/architecture.test.ts`: só `whatsapp/client.ts` pode conhecer a Graph API.
+- `tests/architecture.test.ts`: só `whatsapp/evolutionClient.ts` pode conhecer a Evolution API.
 - `tests/adversarial/etapa-*`: casos de abuso por etapa.
-- `tests/simulation.test.ts` + `scripts/simulate.ts`: cenários ponta a ponta (400 pessoas no mês, repetição, limites por pessoa, virada de mês, billable → trava).
+- `tests/simulation.test.ts` + `scripts/simulate.ts`: cenários ponta a ponta (400 pessoas no dia, repetição, limites por pessoa, virada do dia, trava manual).
 - `tests/chat-sim.test.ts`: acesso ao chat web e conversão das mensagens do bot para a tela.
 
-Observação: o teste de higiene (`tests/repo-hygiene.test.ts`, C0.6) falha enquanto existir um `.dev.vars` real no diretório; ele já falhava antes do chat web.
+O teste de higiene (`tests/repo-hygiene.test.ts`, C0.6) só exige que `.dev.vars` não esteja versionado (ele pode existir local).
 
 ## 14. Estado atual e pendências
 
-- **Canal WhatsApp:** o Worker valida o webhook corretamente (`GET /webhook` devolve o challenge). A configuração do webhook no painel da Meta e a liberação da API estavam pendentes.
+- **Canal WhatsApp:** migrado para a Evolution API (Baileys). O código está pronto e testado com mocks; **falta** subir a Evolution na VM, conectar o chip e validar os formatos não documentados (seção 9 e `docs/PENDENCIAS_HUMANAS.md`).
 - **Chat web:** funcionando em produção; o fluxo inicial (boas-vindas → consentimento) foi verificado.
 - **Analisador de áudio:** `ANALYZER_API_URL` e `ANALYZER_API_KEY` ainda não estão configurados; o áudio só avança o estado. O formato do contrato está isolado em `src/audio/analyzer.ts`.
 - **`PRIVACY_POLICY_URL`** aponta para um valor provisório; troque pela política real.
-- **Flow de cadastro** (`WHATSAPP_FLOW_ID`): não configurado.
 - **Vários usuários no chat web:** hoje há um único usuário de teste, por decisão consciente.
 
 ## 15. Problemas já encontrados e como diagnosticar
 
 | Sintoma | Causa | Como confirmar / corrigir |
 |---|---|---|
-| Meta: "Não foi possível validar o URL de callback" | URL sem `/webhook`, token com espaço, ou secret ausente (config inválida → 500) | `curl` da seção 9; `wrangler secret list`; `wrangler tail` procurando `config_invalid` |
+| Evolution recebe 401 do webhook | `x-webhook-token` ausente/diferente de `EVOLUTION_WEBHOOK_TOKEN` | `GET /webhook/find/<instância>` na Evolution; `wrangler tail` procurando `invalid_webhook_token` |
+| `config_invalid` / webhook 500 | Variável `EVOLUTION_*` ausente ou inválida | `wrangler secret list`; `wrangler tail` |
+| Bot não responde e a Evolution mostra a instância desconectada | O WhatsApp derrubou a sessão (ou o número foi banido) | Reconecte pelo QR Code; se for banimento, use outro chip e revise o volume (`ANTI_FLOOD_MAX_PER_DAY`) |
+| Pessoa responde "2" e o bot não entende | Opções expiradas (12 h) ou apagadas por outra mensagem | Esperado: o bot reapresenta o menu quando a pessoa digitar `menu` |
 | Bot não responde, log `event_failed` | Falha ao falar com o Supabase | Chame `GET /chat/api/diag`: cada passo mostra `ok` ou o status do erro |
 | `diag` com `401` | `SUPABASE_SERVICE_KEY` de produção diferente da correta | Reenvie com `wrangler secret put` |
 | Supabase `PGRST125` / `PGRST205` | `SUPABASE_URL` com `/rest/v1/` no final / tabelas inexistentes | Use só a base da URL; rode `supabase/schema_completo.sql` |
