@@ -586,7 +586,7 @@ async function sendOffTopic(
   // Os contadores vieram da leitura do início do processamento: numa rajada, todas as mensagens leram "0 enviados".
   // Relê os envios logo antes de avisar, para o teto valer de verdade.
   const now = (deps.now ?? (() => new Date()))();
-  let fresh = counters;
+  let fresh: Counters;
   try {
     const sent = await deps.repo.listOutboundSince(await hashWaId(msg.from), new Date(now.getTime() - DAY_MS));
     fresh = { ...counters, sentLastDay: sent.length, sentLast10Min: sent.filter((t) => now.getTime() - t.getTime() < TEN_MIN_MS).length };

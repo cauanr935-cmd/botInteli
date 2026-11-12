@@ -1,8 +1,8 @@
-/** Eventos tipados extraídos do payload do webhook da Meta. */
+/** Eventos tipados extraídos do payload `messages.upsert` do webhook da Evolution (os mesmos que o motor sempre consumiu). */
 export interface MessageBase {
-  /** ID da mensagem (usado para idempotência). */
+  /** ID da mensagem (usado para idempotência): `key.id` do Baileys (o antigo wamid da Meta). */
   wamid: string;
-  /** Telefone de quem enviou (wa_id). */
+  /** Telefone de quem enviou (só dígitos, E.164 sem +). Se o WhatsApp só informar um @lid, é o JID completo. */
   from: string;
   /** Epoch em segundos, se informado. */
   timestamp?: number;
@@ -24,7 +24,7 @@ export interface ListReplyEvent extends MessageBase {
 }
 export interface NfmReplyEvent extends MessageBase {
   type: "nfm_reply";
-  /** JSON bruto (string) do formulário do Flow. */
+  /** JSON bruto (string) do formulário do Flow. (Não chega pelo Baileys; tipo mantido por compatibilidade com o motor.) */
   responseJson: string;
 }
 export interface AudioEvent extends MessageBase {
@@ -47,25 +47,8 @@ export interface ContactsEvent extends MessageBase {
 }
 export interface UnsupportedEvent extends MessageBase {
   type: "unsupported";
-  /** Tipo original informado pela Meta (sticker, reaction, image...). */
+  /** Tipo original informado pela Evolution/Baileys (sticker, reaction, image...). */
   rawType: string;
-}
-
-export interface StatusPricing {
-  billable?: boolean;
-  pricingModel?: string;
-  type?: string;
-  category?: string;
-}
-
-export interface StatusEvent {
-  type: "status";
-  /** wamid da mensagem enviada por nós. */
-  id: string;
-  status: string;
-  recipientId?: string;
-  timestamp?: number;
-  pricing?: StatusPricing;
 }
 
 export type IncomingMessage =
@@ -78,4 +61,5 @@ export type IncomingMessage =
   | ContactsEvent
   | UnsupportedEvent;
 
-export type WebhookEvent = IncomingMessage | StatusEvent;
+/** Status de entrega/preço não são processados: no Baileys não há cobrança por conversa. */
+export type WebhookEvent = IncomingMessage;

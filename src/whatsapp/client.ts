@@ -1,12 +1,20 @@
-// ÚNICO arquivo que conhece a URL da Graph API de envio (R1).
-// Toda mensagem do bot sai por sendGuarded.
-import { monthKey } from "../budget/month";
+// Ponto ÚNICO de saída do bot: toda mensagem passa por sendGuarded (nenhum outro arquivo envia).
+// Este arquivo NÃO conhece a Evolution: o transporte vive em evolutionClient.ts (o único que a conhece).
+//
+// Mudança de semântica (migração Meta Cloud API -> Evolution/Baileys): as travas de "custo Meta" (franquia de
+// 1.000 conversas, janela de 24h, recusa de template) deixaram de existir. O que sobrou é PROTEÇÃO ANTI-BAN:
+//  - trava manual (disjuntor humano, endpoint admin);
+//  - limitador anti-flood OPCIONAL: teto de envios por dia do número (ANTI_FLOOD_MAX_PER_DAY, 0 = desligado),
+//    reaproveitando a reserva atômica do banco com a chave do DIA no lugar da do mês.
+//  - nunca escrever para quem nunca escreveu ao bot (mensagem fria a desconhecido é o maior gatilho de banimento
+//    no Baileys). Não é a janela de 24h: vale para qualquer pessoa que já tenha falado com o bot, em qualquer época.
+// Continua fail closed: erro ao consultar trava/contador = não envia.
+import { dayKey } from "../budget/month";
 import type { Repo } from "../db/repo";
 import { hashWaId } from "../lib/hash";
 import type { Logger } from "../lib/logger";
+import { isSendable, sendViaEvolution, type EvolutionConfig, type TransportResult } from "./evolutionClient";
 
-/** 23h30: 30 min de margem sobre a janela de 24h da Meta. */
-export const WINDOW_MS = (23 * 60 + 30) * 60 * 1000;
 const WARN_RATIO = 0.8;
 
 export interface OutboundMessage {
@@ -20,12 +28,21 @@ export interface OutboundMessage {
 export interface SendContext {
   repo: Repo;
   logger: Logger;
+  /** Chave da trava manual e do contador: o nome da instância da Evolution (coluna legada `phone_number_id`). */
   phoneNumberId: string;
-  whatsappToken: string;
-  graphApiVersion: string;
+  evolutionUrl: string;
+  evolutionApiKey: string;
+  evolutionInstance: string;
+  evolutionNativeInteractive?: boolean;
+  /** Teto de envios por dia (anti-flood). 0 ou ausente = limitador desligado. */
   stopAt: number;
   timezone: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Substitui o transporte (Evolution). Usado pelo chat web simulador, que entrega a mensagem na tela em vez do
+   * WhatsApp. Tudo antes (travas, anti-flood) e depois (log) do envio continua igual.
+   */
+  transport?: (message: OutboundMessage, evo: EvolutionConfig, fetchImpl?: typeof fetch) => Promise<TransportResult>;
   now?: () => Date;
 }
 
@@ -33,90 +50,87 @@ export type SendResult =
   | { status: "sent"; wamid: string | null }
   | { status: "blocked_budget" }
   | { status: "blocked_manual_lock" }
-  | { status: "blocked_window" }
-  | { status: "blocked_template" }
+  | { status: "blocked_unknown_contact" }
   | { status: "error"; code: string };
-
-function isTemplate(m: OutboundMessage): boolean {
-  return String(m.type).trim().toLowerCase() === "template" || "template" in m;
-}
 
 export async function sendGuarded(message: OutboundMessage, ctx: SendContext): Promise<SendResult> {
   try {
-    // 1. templates nunca (não são grátis)
-    if (isTemplate(message)) return { status: "blocked_template" };
+    // 0. tipo que o canal não entrega (template, Flow...): recusa antes de gastar vaga do anti-flood.
+    if (!ctx.transport && !isSendable(message)) return { status: "error", code: "unsupported_type" };
 
     const now = (ctx.now ?? (() => new Date()))();
 
-    // 2 e 3. janela de 23h30 e trava manual: as duas leituras são independentes e rodam juntas (uma viagem de rede a menos).
-    // A ordem das decisões é a mesma de antes e continua fail closed: erro em qualquer uma = não envia.
-    const hashP = hashWaId(message.to);
-    const [windowRes, lockRes] = await Promise.allSettled([
-      ctx.repo.getLastUserMessageAt(message.to),
+    // 1. trava manual e contato conhecido: leituras independentes, em paralelo (fail closed: erro = não envia)
+    const [lockRes, lastRes] = await Promise.allSettled([
       ctx.repo.getManualLock(ctx.phoneNumberId),
+      ctx.repo.getLastUserMessageAt(message.to),
     ]);
-    if (windowRes.status === "rejected") return { status: "error", code: "window_lookup_failed" };
-    const last = windowRes.value;
-    if (!last || now.getTime() - last.getTime() > WINDOW_MS) return { status: "blocked_window" };
     if (lockRes.status === "rejected") return { status: "error", code: "lock_lookup_failed" };
     if (lockRes.value.locked) return { status: "blocked_manual_lock" };
+    if (lastRes.status === "rejected") return { status: "error", code: "contact_lookup_failed" };
+    if (lastRes.value === null) return { status: "blocked_unknown_contact" };
 
-    // 4. reserva atômica da vaga
-    const month = monthKey(now, ctx.timezone);
-    let outcome;
-    try {
-      outcome = await ctx.repo.reserveSlot(ctx.phoneNumberId, month, ctx.stopAt);
-    } catch {
-      ctx.logger.log("error", "budget_reserve_failed");
-      return { status: "error", code: "reserve_failed" };
-    }
-    // Alertas de 80% e de disjuntor são só log: rodam junto com o envio, sem atrasá-lo (e são aguardados no fim).
-    const alerts = emitAlerts(ctx, month, outcome);
-    if (!outcome.ok) {
-      await alerts;
-      return { status: "blocked_budget" };
+    // 2. anti-flood opcional: reserva atômica de uma vaga no dia
+    let alerts: Promise<void> = Promise.resolve();
+    if (ctx.stopAt > 0) {
+      const period = dayKey(now, ctx.timezone);
+      let outcome;
+      try {
+        outcome = await ctx.repo.reserveSlot(ctx.phoneNumberId, period, ctx.stopAt);
+      } catch {
+        ctx.logger.log("error", "budget_reserve_failed");
+        return { status: "error", code: "reserve_failed" };
+      }
+      alerts = emitAlerts(ctx, period, outcome);
+      if (!outcome.ok) {
+        await alerts;
+        return { status: "blocked_budget" };
+      }
     }
 
-    // 5. envio (a vaga NÃO é devolvida se falhar)
-    const reservedAt = now;
+    // 3. envio (a vaga NÃO é devolvida se falhar: contagem conservadora)
+    const hashP = hashWaId(message.to);
     let wamid: string | null = null;
     let errorCode: string | null = null;
+    let pending: { options: { id: string; title: string }[] } | null | undefined;
     try {
-      const { to, ...rest } = message;
-      const f = ctx.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
-      const res = await f(
-        `https://graph.facebook.com/${ctx.graphApiVersion}/${ctx.phoneNumberId}/messages`,
+      const r = await (ctx.transport ?? sendViaEvolution)(
+        message,
         {
-          method: "POST",
-          headers: { Authorization: `Bearer ${ctx.whatsappToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to, ...rest }),
+          url: ctx.evolutionUrl, apiKey: ctx.evolutionApiKey, instance: ctx.evolutionInstance,
+          ...(ctx.evolutionNativeInteractive ? { nativeInteractive: true } : {}),
         },
+        ctx.fetchImpl,
       );
-      if (res.ok) {
-        const body = (await res.json().catch(() => null)) as { messages?: { id?: string }[] } | null;
-        wamid = body?.messages?.[0]?.id ?? null;
+      if (r.ok) {
+        wamid = r.messageId;
+        pending = r.pending ? { options: r.pending } : null;
       } else {
-        errorCode = `http_${res.status}`;
-        // Diagnóstico: o erro da Meta (código/mensagem), nunca o conteúdo da mensagem nem o telefone.
-        const err = (await res.json().catch(() => null)) as
-          { error?: { message?: string; type?: string; code?: number; error_subcode?: number; error_data?: { details?: string } } } | null;
-        ctx.logger.log("warn", "whatsapp_send_failed", {
-          status: res.status, messageType: message.type, metaCode: err?.error?.code ?? null, metaSubcode: err?.error?.error_subcode ?? null,
-          metaType: err?.error?.type ?? null, metaMessage: (err?.error?.error_data?.details ?? err?.error?.message ?? "").replace(/\d{6,}/g, "***").slice(0, 200), // sem telefones (R3)
-        });
+        errorCode = r.code;
+        ctx.logger.log("warn", "whatsapp_send_failed", { status: r.httpStatus ?? null, code: r.code, messageType: message.type, detail: r.detail ?? "" });
       }
     } catch (e) {
       errorCode = "network_error";
       ctx.logger.log("warn", "whatsapp_send_exception", { messageType: message.type, error: e instanceof Error ? e.name : "unknown" });
     }
 
-    // 6. outbound_log (falha aqui não muda o resultado do envio)
+    // 4. opções do texto numerado: mensagem interativa grava; qualquer outro envio apaga (um "1" depois de uma
+    // pergunta aberta não pode virar a opção 1 de um menu antigo). Falha aqui não muda o resultado do envio.
+    if (pending !== undefined) {
+      try {
+        await ctx.repo.setPendingChoices(await hashP, pending ? pending.options : null, now);
+      } catch {
+        ctx.logger.log("error", "pending_choices_failed");
+      }
+    }
+
+    // 5. outbound_log (falha aqui não muda o resultado do envio)
     try {
       await ctx.repo.insertOutboundLog({
         waIdHash: await hashP,
         messageType: message.type,
         wamid,
-        reservedAt,
+        reservedAt: now,
         sentOk: errorCode === null,
         errorCode,
       });
@@ -132,22 +146,22 @@ export async function sendGuarded(message: OutboundMessage, ctx: SendContext): P
 
 async function emitAlerts(
   ctx: SendContext,
-  month: string,
+  period: string,
   o: { reservedCount: number; stopAt: number; tripped: boolean },
 ): Promise<void> {
   try {
-    if (o.reservedCount >= Math.ceil(o.stopAt * WARN_RATIO) && (await ctx.repo.claimBudgetAlert(ctx.phoneNumberId, month, "warn"))) {
-      ctx.logger.log("warn", "budget_80_percent", { month, reserved: o.reservedCount, stopAt: o.stopAt });
+    if (o.reservedCount >= Math.ceil(o.stopAt * WARN_RATIO) && (await ctx.repo.claimBudgetAlert(ctx.phoneNumberId, period, "warn"))) {
+      ctx.logger.log("warn", "flood_limit_80_percent", { period, reserved: o.reservedCount, stopAt: o.stopAt });
     }
-    if ((o.tripped || o.reservedCount >= o.stopAt) && (await ctx.repo.claimBudgetAlert(ctx.phoneNumberId, month, "trip"))) {
-      ctx.logger.log("critical", "budget_circuit_open", { month, reserved: o.reservedCount, stopAt: o.stopAt });
+    if ((o.tripped || o.reservedCount >= o.stopAt) && (await ctx.repo.claimBudgetAlert(ctx.phoneNumberId, period, "trip"))) {
+      ctx.logger.log("critical", "flood_limit_reached", { period, reserved: o.reservedCount, stopAt: o.stopAt });
     }
   } catch {
     // alerta é best-effort; nunca afeta a decisão de envio
   }
 }
 
-/** ---- Mídia recebida (Etapa 6) ---- */
+/** ---- Mídia recebida: contrato usado pelos pipelines (a implementação está em evolutionClient.ts) ---- */
 export interface MediaInfo {
   url: string;
   mimeType?: string;
@@ -158,54 +172,8 @@ export type DownloadResult =
   | { ok: false; reason: "expired" | "too_large" | "error" };
 
 export interface MediaClient {
-  /** GET /{media_id}: devolve a URL (expira em 5 min). */
+  /** Resolve o id da mídia (na Evolution só embrulha o id; não há URL temporária). */
   getInfo(mediaId: string): Promise<MediaInfo>;
-  /** Baixa a URL com o token. Recusa acima de `maxBytes` (olha o Content-Length antes de ler). */
+  /** Baixa o conteúdo. Recusa acima de `maxBytes`. */
   download(url: string, maxBytes: number): Promise<DownloadResult>;
-}
-
-export interface MediaClientOptions {
-  whatsappToken: string;
-  graphApiVersion: string;
-  fetchImpl?: typeof fetch;
-}
-
-export function createMediaClient(o: MediaClientOptions): MediaClient {
-  const f = o.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
-  const auth = { Authorization: `Bearer ${o.whatsappToken}` };
-  return {
-    async getInfo(mediaId) {
-      if (!/^[A-Za-z0-9_-]{1,100}$/.test(mediaId)) throw new Error("media_id inválido");
-      const res = await f(`https://graph.facebook.com/${o.graphApiVersion}/${mediaId}`, { headers: auth });
-      if (!res.ok) throw new Error(`media_info_http_${res.status}`);
-      const j = (await res.json()) as { url?: unknown; mime_type?: unknown; file_size?: unknown };
-      if (typeof j.url !== "string" || !j.url.startsWith("https://")) throw new Error("media_info_sem_url");
-      return {
-        url: j.url,
-        ...(typeof j.mime_type === "string" ? { mimeType: j.mime_type } : {}),
-        ...(typeof j.file_size === "number" ? { fileSize: j.file_size } : {}),
-      };
-    },
-    async download(url, maxBytes) {
-      if (!url.startsWith("https://")) return { ok: false, reason: "error" };
-      let res: Response;
-      try {
-        res = await f(url, { headers: auth });
-      } catch {
-        return { ok: false, reason: "error" };
-      }
-      if ([401, 403, 404, 410].includes(res.status)) return { ok: false, reason: "expired" };
-      if (!res.ok) return { ok: false, reason: "error" };
-      const len = Number(res.headers.get("content-length"));
-      if (Number.isFinite(len) && len > maxBytes) return { ok: false, reason: "too_large" };
-      try {
-        const bytes = new Uint8Array(await res.arrayBuffer());
-        if (bytes.length > maxBytes) return { ok: false, reason: "too_large" };
-        const ct = res.headers.get("content-type");
-        return { ok: true, bytes, ...(ct ? { contentType: ct } : {}) };
-      } catch {
-        return { ok: false, reason: "error" };
-      }
-    },
-  };
 }

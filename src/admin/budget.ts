@@ -1,4 +1,4 @@
-import { monthKey } from "../budget/month";
+import { dayKey } from "../budget/month";
 import type { Repo } from "../db/repo";
 import type { Logger } from "../lib/logger";
 
@@ -6,7 +6,9 @@ export interface AdminDeps {
   adminToken: string;
   repo: Repo;
   logger: Logger;
+  /** Chave da trava e do contador: nome da instância da Evolution. */
   phoneNumberId: string;
+  /** Teto anti-flood por dia (0 = desligado). */
   stopAt: number;
   timezone: string;
   now?: () => Date;
@@ -33,13 +35,15 @@ async function tokenMatches(given: string, expected: string): Promise<boolean> {
 
 async function snapshot(deps: AdminDeps) {
   const now = (deps.now ?? (() => new Date()))();
-  const month = monthKey(now, deps.timezone);
+  const period = dayKey(now, deps.timezone);
   const [budget, lock] = await Promise.all([
-    deps.repo.getBudget(deps.phoneNumberId, month),
+    deps.repo.getBudget(deps.phoneNumberId, period),
     deps.repo.getManualLock(deps.phoneNumberId),
   ]);
+  // Antes (Meta) o período era o mês e o teto a franquia grátis; agora é o dia e um limitador anti-flood opcional.
   return {
-    month,
+    period,
+    flood_limit_enabled: deps.stopAt > 0,
     reserved_count: budget?.reservedCount ?? 0,
     stop_at: budget?.stopAt ?? deps.stopAt,
     tripped: budget?.tripped ?? false,

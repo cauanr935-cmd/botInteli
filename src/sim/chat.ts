@@ -1,8 +1,8 @@
-// Canal de entrada ALTERNATIVO (simulador de chat web), usado enquanto a API da Meta não é liberada.
+// Canal de entrada ALTERNATIVO (simulador de chat web), usado para teste e demonstração sem WhatsApp.
 // Não altera nenhuma regra do bot: monta os mesmos eventos que o webhook produziria e passa pelo mesmo
 // createEventHandler (motor de conversa, cadastro, áudio -> R2 -> analisador, limites, orçamento).
-// Diferenças, só nas bordas: (1) a entrada vem desta página, não da Meta; (2) a "Graph API" de envio é
-// uma função local que captura o corpo da mensagem para exibir na tela, em vez de chamar a Meta.
+// Diferenças, só nas bordas: (1) a entrada vem desta página, não do webhook da Evolution; (2) o transporte de envio é
+// uma função local que captura a mensagem para exibir na tela, em vez de chamar a Evolution.
 // Um único usuário de teste; o histórico fica no bucket R2 (chave chat-sim/history.json).
 import { defaultSensitiveMatcher } from "../axo/sensitive";
 import { loadConfig } from "../config";
@@ -16,7 +16,8 @@ import { createLogger, type Logger } from "../lib/logger";
 import { ContentProvider } from "../services/provider";
 import { createEventHandler } from "../webhook/events";
 import { processEvents } from "../webhook/handler";
-import type { MediaClient } from "../whatsapp/client";
+import type { MediaClient, OutboundMessage } from "../whatsapp/client";
+import type { TransportResult } from "../whatsapp/evolutionClient";
 import type { IncomingMessage } from "../whatsapp/types";
 
 type Env = Record<string, unknown> & { AUDIOS?: R2Bucket };
@@ -143,7 +144,7 @@ function safeEqual(a: string, b: string): boolean {
   return d === 0;
 }
 
-/** Transforma o corpo que iria à Graph API no que a tela precisa desenhar. */
+/** Transforma a mensagem (formato interno, com botões/lista) no que a tela precisa desenhar. */
 export function toUi(body: Record<string, unknown>): ChatUi {
   if (body.type === "text") {
     return { body: String((body.text as { body?: unknown } | undefined)?.body ?? "") };
@@ -436,13 +437,15 @@ export async function handleChat(request: Request, deps: ChatDeps): Promise<Resp
     return json({ items: mine });
   }
 
-  // ---- mesma fiação de produção, com Graph API local e mídia vinda desta requisição ----
+  // ---- mesma fiação de produção, com transporte local e mídia vinda desta requisição ----
   const outbound: ChatItem[] = [];
-  const graph = async (_url: unknown, init?: RequestInit): Promise<Response> => {
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+  // Transporte local: a mensagem (formato interno, com botões/lista) vai para a tela, nunca para a Evolution.
+  const transport = async (message: OutboundMessage): Promise<TransportResult> => {
     const wamid = `wamid.CHATOUT.${crypto.randomUUID()}`;
+    const body: Record<string, unknown> = { ...message };
+    delete body.to;
     outbound.push({ id: wamid, dir: "out", at: new Date().toISOString(), kind: "text", ui: toUi(body) });
-    return new Response(JSON.stringify({ messages: [{ id: wamid }] }), { status: 200 });
+    return { ok: true, messageId: wamid, pending: null };
   };
   const media: MediaClient = {
     getInfo: async () => ({ url: "https://chat.local/media", mimeType: audioMime, fileSize: audioBytes?.length ?? 0 }),
@@ -458,7 +461,7 @@ export async function handleChat(request: Request, deps: ChatDeps): Promise<Resp
   }
   const recentContext = recentLines(historyForContext);
   const onEvent = createEventHandler(cfg, {
-    repo, logger, content, fetchImpl: graph as unknown as typeof fetch,
+    repo, logger, content, transport,
     ...(recentContext.length ? { recentContext } : {}),
     ...((a) => (a ? { agent: a } : {}))(createAgent(cfg, logger)),
     audio: {
@@ -468,7 +471,7 @@ export async function handleChat(request: Request, deps: ChatDeps): Promise<Resp
         : new DeferredAudioAnalyzer(),
     },
   });
-  await processEvents([event], { appSecret: cfg.appSecret, verifyToken: cfg.verifyToken, repo, logger, onEvent });
+  await processEvents([event], { webhookToken: "", repo, logger, onEvent });
 
   const history = await readHistory(bucket);
   history.push(...mine, ...outbound);

@@ -1,6 +1,6 @@
 import { handleAdmin, type AdminDeps } from "./admin/budget";
 import { loadConfig } from "./config";
-import { createMediaClient } from "./whatsapp/client";
+import { createMediaClient } from "./whatsapp/evolutionClient";
 import { createAgent } from "./ai/grok";
 import { legalResponse } from "./legal/page";
 import { DeferredAudioAnalyzer, HttpAudioAnalyzer } from "./audio/analyzer";
@@ -15,13 +15,12 @@ import { handleApi } from "./mentoria/api";
 import { handlePanel } from "./mentoria/panel";
 import { handleChat } from "./sim/chat";
 import { PAGE_HTML } from "./sim/page";
-import { handleVerification, handleWebhookPost, type EventHandler, type WaitUntilCtx } from "./webhook/handler";
+import { handleWebhookPost, type EventHandler, type WaitUntilCtx } from "./webhook/handler";
 
 export type Env = Record<string, unknown> & { AUDIOS?: R2Bucket };
 
 export interface AppDeps {
-  appSecret: string;
-  verifyToken: string;
+  webhookToken: string;
   repo: Repo;
   logger: Logger;
   onEvent?: EventHandler;
@@ -42,7 +41,6 @@ export async function route(request: Request, ctx: WaitUntilCtx, deps: AppDeps |
   }
   if (url.pathname === "/webhook") {
     if (!deps) return new Response("server misconfigured", { status: 500 });
-    if (request.method === "GET") return handleVerification(url, deps.verifyToken);
     if (request.method === "POST") return handleWebhookPost(request, ctx, deps);
     return new Response("method not allowed", { status: 405 });
   }
@@ -62,8 +60,7 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
       contentProviders.set(cfg.supabaseUrl, content);
     }
     return {
-      appSecret: cfg.appSecret,
-      verifyToken: cfg.verifyToken,
+      webhookToken: cfg.evolutionWebhookToken,
       repo,
       logger,
       onEvent: createEventHandler(cfg, {
@@ -74,7 +71,7 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
         ...(env.AUDIOS
           ? {
               audio: {
-                media: createMediaClient({ whatsappToken: cfg.whatsappToken, graphApiVersion: cfg.graphApiVersion }),
+                media: createMediaClient({ url: cfg.evolutionUrl, apiKey: cfg.evolutionApiKey, instance: cfg.evolutionInstance }),
                 store: new R2AudioStore(env.AUDIOS),
                 analyzer: cfg.analyzerApiUrl && cfg.analyzerApiKey
                   ? new HttpAudioAnalyzer({ url: cfg.analyzerApiUrl, apiKey: cfg.analyzerApiKey, timeoutMs: cfg.analyzerTimeoutMs })
@@ -84,8 +81,8 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
           : (logger.log("warn", "r2_binding_missing"), {})),
       }),
       admin: {
-        adminToken: cfg.adminToken, repo, logger, phoneNumberId: cfg.phoneNumberId,
-        stopAt: cfg.stopAt, timezone: cfg.metaAccountTimezone,
+        adminToken: cfg.adminToken, repo, logger, phoneNumberId: cfg.evolutionInstance,
+        stopAt: cfg.stopAt, timezone: cfg.timezone,
       },
     };
   } catch (e) {
@@ -98,7 +95,7 @@ export default {
   async fetch(request: Request, env: Env = {}, ctx?: ExecutionContext): Promise<Response> {
     const logger = createLogger();
     const pathname = new URL(request.url).pathname;
-    // Painel de metadados (login) e API de integração do analisador. Independentes das credenciais da Meta.
+    // Painel de metadados (login) e API de integração do analisador. Independentes das credenciais da Evolution.
     if (pathname === "/painel" || pathname.startsWith("/painel/") || pathname.startsWith("/api/v1/")) {
       const url = typeof env.SUPABASE_URL === "string" ? env.SUPABASE_URL.trim() : "";
       const key = typeof env.SUPABASE_SERVICE_KEY === "string" ? env.SUPABASE_SERVICE_KEY.trim() : "";
@@ -112,7 +109,7 @@ export default {
     }
     // Termos de Uso e Política de Privacidade (LGPD): página pública, o link citado no consentimento.
     if (request.method === "GET" && (pathname === "/privacidade" || pathname === "/termos" || pathname === "/lgpd")) return legalResponse();
-    // Simulador de chat web (canal alternativo enquanto a API da Meta não é liberada). Desligado por padrão.
+    // Simulador de chat web (canal alternativo, sem WhatsApp). Desligado por padrão.
     if (pathname === "/chat" || pathname.startsWith("/chat/")) {
       return handleChat(request, { env, logger, pageHtml: PAGE_HTML });
     }
@@ -127,7 +124,7 @@ export default {
       const cfg = loadConfig(env);
       await runScheduled({
         repo: new SupabaseRepo(cfg.supabaseUrl, cfg.supabaseServiceKey), logger,
-        phoneNumberId: cfg.phoneNumberId, stopAt: cfg.stopAt, timezone: cfg.metaAccountTimezone,
+        phoneNumberId: cfg.evolutionInstance, stopAt: cfg.stopAt, timezone: cfg.timezone,
         ...(env.AUDIOS ? { store: new R2AudioStore(env.AUDIOS) } : {}),
       });
     } catch (e) {

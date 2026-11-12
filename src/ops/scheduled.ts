@@ -1,5 +1,5 @@
-// Cron diário (Etapa 7). Nunca envia mensagem (R1): só mantém o banco ativo, limpa e registra o uso.
-import { monthKey } from "../budget/month";
+// Cron diário (Etapa 7). Nunca envia mensagem (R1): só mantém o banco ativo, limpa e registra o uso do limitador anti-flood.
+import { dayKey } from "../budget/month";
 import type { AudioStore } from "../audio/storage";
 import type { Repo } from "../db/repo";
 import { housekeepMentorias } from "../mentoria/housekeeping";
@@ -56,10 +56,10 @@ export async function runScheduled(deps: ScheduledDeps): Promise<void> {
   }
 
   try {
-    const month = monthKey(now, deps.timezone);
-    const row = await repo.getBudget(deps.phoneNumberId, month);
+    const period = dayKey(now, deps.timezone);
+    const row = await repo.getBudget(deps.phoneNumberId, period);
     logger.log("info", "cron_budget_usage", {
-      month, reserved_count: row?.reservedCount ?? 0, stop_at: row?.stopAt ?? deps.stopAt, tripped: row?.tripped ?? false,
+      period, reserved_count: row?.reservedCount ?? 0, stop_at: row?.stopAt ?? deps.stopAt, tripped: row?.tripped ?? false,
     });
   } catch (e) {
     logger.log("error", "cron_usage_failed", { error: e instanceof Error ? e.name : "unknown" });

@@ -1,42 +1,25 @@
-const HEX = /^[0-9a-f]{64}$/i;
+// Autenticação do webhook da Evolution. A Evolution NÃO assina o corpo (como o HMAC da Meta): usamos um segredo
+// compartilhado, configurado na instância como header (`headers` do /webhook/set) e conferido em tempo constante.
+export const WEBHOOK_TOKEN_HEADER = "x-webhook-token";
 
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
+/** Aceita `X-Webhook-Token: <token>` ou `Authorization: Bearer <token>`. */
+export function extractWebhookToken(headers: Headers): string | null {
+  const direct = headers.get(WEBHOOK_TOKEN_HEADER);
+  if (direct) return direct.trim();
+  const m = /^Bearer (.+)$/.exec(headers.get("authorization") ?? "");
+  return m ? (m[1] ?? "").trim() : null;
 }
 
-/** Valida X-Hub-Signature-256 ("sha256=<hex>") sobre o corpo bruto; comparação em tempo constante. */
-export async function verifySignature(
-  rawBody: ArrayBuffer | Uint8Array,
-  header: string | null,
-  appSecret: string,
-): Promise<boolean> {
-  if (!header || !appSecret) return false;
-  const prefix = "sha256=";
-  if (!header.startsWith(prefix)) return false;
-  const hex = header.slice(prefix.length);
-  if (!HEX.test(hex)) return false;
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(appSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"],
-  );
-  // crypto.subtle.verify compara em tempo constante.
-  return crypto.subtle.verify("HMAC", key, hexToBytes(hex), rawBody);
-}
-
-/** Usado em testes para assinar payloads. */
-export async function signBody(body: string, appSecret: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(appSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
-  return "sha256=" + [...sig].map((b) => b.toString(16).padStart(2, "0")).join("");
+/** Comparação em tempo constante (via hash, mesmo tamanho). Token vazio nunca vale. */
+export async function verifyWebhookToken(given: string | null, expected: string): Promise<boolean> {
+  if (!given || !expected) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(given)),
+    crypto.subtle.digest("SHA-256", enc.encode(expected)),
+  ]);
+  const x = new Uint8Array(a), y = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+  return diff === 0;
 }
