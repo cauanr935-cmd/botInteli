@@ -1,19 +1,22 @@
-WHATSAPP_TOKEN=
-PHONE_NUMBER_ID=
-APP_SECRET=
-VERIFY_TOKEN=
-GRAPH_API_VERSION=v21.0
+# Canal WhatsApp: Evolution API v2 (modo Baileys) numa VM sua. (As variáveis da Meta — WHATSAPP_TOKEN,
+# PHONE_NUMBER_ID, APP_SECRET, VERIFY_TOKEN, GRAPH_API_VERSION — são obsoletas e não são mais lidas.)
+EVOLUTION_URL=https://evolution.exemplo.com
+EVOLUTION_API_KEY=
+EVOLUTION_INSTANCE=
+EVOLUTION_WEBHOOK_TOKEN=
+# true = botões/listas nativos (instáveis no Baileys); padrão: texto numerado "1) ... 2) ..."
+EVOLUTION_NATIVE_INTERACTIVE=false
 SUPABASE_URL=
 SUPABASE_SERVICE_KEY=
 ANALYZER_API_URL=
 ANALYZER_API_KEY=
 ADMIN_TOKEN=
-META_ACCOUNT_TIMEZONE=America/Sao_Paulo
-BUDGET_SAFETY_MARGIN=50
+TIMEZONE=America/Sao_Paulo
+# Anti-flood (proteção contra banimento): teto de mensagens enviadas por dia pelo número. 0 = desligado; máximo 990.
+ANTI_FLOOD_MAX_PER_DAY=0
 MAX_BOT_MSGS_PER_USER_PER_DAY=12
 MAX_BOT_MSGS_PER_USER_PER_10MIN=4
 # opcional
-WHATSAPP_FLOW_ID=
 PRIVACY_POLICY_URL=https://bot-whatsapp.bot-whatsaap-inteli.workers.dev/privacidade
 TERMS_VERSION=2025-01
 MAX_AUDIO_BYTES=16000000

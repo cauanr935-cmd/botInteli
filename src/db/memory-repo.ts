@@ -1,9 +1,8 @@
-import { MAX_STOP_AT } from "../config";
 import { foldName } from "../mentoria/parse";
 import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
-  AudioRecord, BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  AudioRecord, BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingChoiceOption, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 export interface MemoryOutboundRow extends OutboundLogEntry {
@@ -160,13 +159,22 @@ export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     return this.sensitiveEvents.filter((e) => e.waIdHash === waIdHash).reduce<Date | null>((m, e) => (m === null || e.at > m ? e.at : m), null);
   }
 
+  readonly pendingChoices = new Map<string, { options: PendingChoiceOption[]; createdAt: Date }>();
+  async setPendingChoices(waIdHash: string, options: PendingChoiceOption[] | null, at: Date): Promise<void> {
+    if (options === null) this.pendingChoices.delete(waIdHash);
+    else this.pendingChoices.set(waIdHash, { options: options.map((o) => ({ ...o })), createdAt: at });
+  }
+  async getPendingChoices(waIdHash: string): Promise<{ options: PendingChoiceOption[]; createdAt: Date } | null> {
+    return this.pendingChoices.get(waIdHash) ?? null;
+  }
+
   async listOutboundSince(waIdHash: string, since: Date): Promise<Date[]> {
     return this.outbound.filter((r) => r.waIdHash === waIdHash && r.reservedAt >= since).map((r) => r.reservedAt);
   }
 
   // ---- orçamento: mesma semântica da função SQL (sem await entre ler e escrever) ----
   async reserveSlot(phoneNumberId: string, monthKey: string, stopAt: number): Promise<ReserveOutcome> {
-    const cap = Math.min(stopAt, MAX_STOP_AT);
+    const cap = Math.min(stopAt, 990); // mesmo teto da função SQL
     if (!(cap >= 1)) throw new Error("stop_at invalido");
     const k = `${phoneNumberId}|${monthKey}`;
     let b = this.budgets.get(k);

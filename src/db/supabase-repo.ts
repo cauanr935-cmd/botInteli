@@ -4,7 +4,7 @@ import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
   AudioRecord,
-  BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingChoiceOption, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
 } from "./repo";
 
 const MENTORIA_COLS = "id,wa_id_hash,mentoria_role,subject,partner,mime,bytes,r2_key,created_at,analysis_result,analysis_at,ocorreu_em,partner_wa_id_hash,partner_confirmed_at,partner_rejected_at,audio_sha256,audio_deleted_at,contested_reason";
@@ -178,6 +178,28 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
       body: JSON.stringify({ id: crypto.randomUUID(), wa_id_hash: d.waIdHash, text: d.text, categories: d.categories, created_at: d.at.toISOString() }),
     });
     if (!res.ok) throw new Error(`supabase insertDoubt falhou: ${res.status}`);
+  }
+
+  async setPendingChoices(waIdHash: string, options: PendingChoiceOption[] | null, at: Date): Promise<void> {
+    const res = options === null
+      ? await this.fetchImpl(`${this.url}/rest/v1/pending_choices?wa_id_hash=eq.${encodeURIComponent(waIdHash)}`, {
+          method: "DELETE", headers: this.headers(),
+        })
+      : await this.fetchImpl(`${this.url}/rest/v1/pending_choices?on_conflict=wa_id_hash`, {
+          method: "POST",
+          headers: this.headers({ Prefer: "resolution=merge-duplicates" }),
+          body: JSON.stringify({ wa_id_hash: waIdHash, options, created_at: at.toISOString() }),
+        });
+    if (!res.ok) throw new Error(`supabase setPendingChoices falhou: ${res.status}`);
+  }
+  async getPendingChoices(waIdHash: string): Promise<{ options: PendingChoiceOption[]; createdAt: Date } | null> {
+    const res = await this.fetchImpl(
+      `${this.url}/rest/v1/pending_choices?wa_id_hash=eq.${encodeURIComponent(waIdHash)}&select=options,created_at&limit=1`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) throw new Error(`supabase getPendingChoices falhou: ${res.status}`);
+    const r = ((await res.json()) as { options: PendingChoiceOption[]; created_at: string }[])[0];
+    return r ? { options: r.options, createdAt: new Date(r.created_at) } : null;
   }
 
   async recordSensitiveEvent(waIdHash: string, level: "A" | "B", channel: string, at: Date): Promise<void> {

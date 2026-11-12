@@ -1,10 +1,9 @@
-/** Franquia gratuita da Meta por número/mês. Constante: nunca vem do ambiente (R1). */
-export const META_FREE_TIER_PER_MONTH = 1000;
-export const MIN_SAFETY_MARGIN = 10;
-export const DEFAULT_SAFETY_MARGIN = 50;
-export const MAX_STOP_AT = 990;
-/** Margem máxima: garante STOP_AT >= 500 (nunca zero/negativo). */
-export const MAX_SAFETY_MARGIN = 500;
+/**
+ * Limitador anti-flood (antes "orçamento Meta"). No canal Evolution/Baileys não existe franquia nem cobrança por
+ * conversa: o teto diário de envios existe para proteger o número contra BANIMENTO por excesso de volume.
+ * 0 = desligado (padrão). O teto máximo continua 990 porque a função SQL de reserva limita `stop_at` a 990.
+ */
+export const MAX_ANTI_FLOOD_PER_DAY = 990;
 
 /** Provedores de IA com API no formato OpenAI (chat/completions). O modelo é só um padrão: troque por AI_MODEL. */
 export const AI_PROVIDERS = {
@@ -13,19 +12,23 @@ export const AI_PROVIDERS = {
 } as const;
 
 export interface Config {
-  whatsappToken: string;
-  phoneNumberId: string;
-  appSecret: string;
-  verifyToken: string;
-  graphApiVersion: string;
+  /** Evolution API (canal WhatsApp, modo Baileys). */
+  evolutionUrl: string;
+  evolutionApiKey: string;
+  evolutionInstance: string;
+  /** Segredo compartilhado que a Evolution envia em cada chamada ao /webhook. */
+  evolutionWebhookToken: string;
+  /** true = tenta botões/listas nativos (instável no Baileys); false = texto numerado (padrão). */
+  evolutionNativeInteractive: boolean;
   supabaseUrl: string;
   supabaseServiceKey: string;
   /** O analisador é opcional durante a implantação inicial. Sem ele, áudios ficam desativados. */
   analyzerApiUrl?: string;
   analyzerApiKey?: string;
   adminToken: string;
-  metaAccountTimezone: string;
-  budgetSafetyMargin: number;
+  /** Fuso que define a virada do dia (contador anti-flood e limites por pessoa). */
+  timezone: string;
+  /** Teto de envios por dia do número (anti-flood). 0 = desligado. */
   stopAt: number;
   maxBotMsgsPerUserPerDay: number;
   maxBotMsgsPerUserPer10Min: number;
@@ -87,10 +90,20 @@ export function loadConfig(env: Env): Config {
     return typeof v === "string" && v.trim() !== "" ? v.trim() : def;
   };
 
-  const whatsappToken = req("WHATSAPP_TOKEN");
-  const phoneNumberId = req("PHONE_NUMBER_ID");
-  const appSecret = req("APP_SECRET");
-  const verifyToken = req("VERIFY_TOKEN");
+  const evolutionUrl = req("EVOLUTION_URL").replace(/\/+$/, "");
+  if (evolutionUrl !== "" && !/^(https:\/\/|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$))/.test(evolutionUrl)) {
+    problems.push("EVOLUTION_URL deve começar com https:// (http:// só para localhost)");
+  }
+  const evolutionApiKey = req("EVOLUTION_API_KEY");
+  const evolutionInstance = req("EVOLUTION_INSTANCE");
+  if (evolutionInstance !== "" && !/^[A-Za-z0-9_.-]{1,64}$/.test(evolutionInstance)) {
+    problems.push("EVOLUTION_INSTANCE deve ter só letras, números, ponto, hífen ou sublinhado (até 64)");
+  }
+  const evolutionWebhookToken = req("EVOLUTION_WEBHOOK_TOKEN");
+  if (evolutionWebhookToken !== "" && evolutionWebhookToken.length < 16) {
+    problems.push("EVOLUTION_WEBHOOK_TOKEN deve ter pelo menos 16 caracteres");
+  }
+  const evolutionNativeInteractive = opt("EVOLUTION_NATIVE_INTERACTIVE", "false").toLowerCase() === "true";
   const supabaseUrl = req("SUPABASE_URL");
   const supabaseServiceKey = req("SUPABASE_SERVICE_KEY");
   const analyzerApiUrl = opt("ANALYZER_API_URL", "");
@@ -101,19 +114,10 @@ export function loadConfig(env: Env): Config {
   const adminToken = req("ADMIN_TOKEN");
   const privacyPolicyUrl = req("PRIVACY_POLICY_URL");
   const termsVersion = req("TERMS_VERSION");
-  const graphApiVersion = req("GRAPH_API_VERSION");
 
-  const budgetSafetyMargin = parseInteger(
-    env, "BUDGET_SAFETY_MARGIN", DEFAULT_SAFETY_MARGIN, MIN_SAFETY_MARGIN, problems,
-  );
-  const stopAt = META_FREE_TIER_PER_MONTH - budgetSafetyMargin;
-  if (budgetSafetyMargin > MAX_SAFETY_MARGIN) {
-    problems.push(
-      `BUDGET_SAFETY_MARGIN deve ser <= ${MAX_SAFETY_MARGIN} (recebido ${budgetSafetyMargin}); STOP_AT ficaria ${stopAt}`,
-    );
-  }
-  if (stopAt > MAX_STOP_AT) {
-    problems.push(`STOP_AT (${stopAt}) não pode passar de ${MAX_STOP_AT}`);
+  const stopAt = parseInteger(env, "ANTI_FLOOD_MAX_PER_DAY", 0, 0, problems);
+  if (stopAt > MAX_ANTI_FLOOD_PER_DAY) {
+    problems.push(`ANTI_FLOOD_MAX_PER_DAY deve ser <= ${MAX_ANTI_FLOOD_PER_DAY} (recebido ${stopAt})`);
   }
 
   const maxBotMsgsPerUserPerDay = parseInteger(env, "MAX_BOT_MSGS_PER_USER_PER_DAY", 12, 1, problems);
@@ -133,12 +137,12 @@ export function loadConfig(env: Env): Config {
 
   const flow = opt("WHATSAPP_FLOW_ID", "");
   return {
-    whatsappToken, phoneNumberId, appSecret, verifyToken, graphApiVersion,
+    evolutionUrl, evolutionApiKey, evolutionInstance, evolutionWebhookToken, evolutionNativeInteractive,
     supabaseUrl, supabaseServiceKey,
     ...(analyzerApiUrl && analyzerApiKey ? { analyzerApiUrl, analyzerApiKey } : {}),
     adminToken,
-    metaAccountTimezone: opt("META_ACCOUNT_TIMEZONE", "America/Sao_Paulo"),
-    budgetSafetyMargin, stopAt,
+    timezone: opt("TIMEZONE", "") || opt("META_ACCOUNT_TIMEZONE", "America/Sao_Paulo"),
+    stopAt,
     maxBotMsgsPerUserPerDay, maxBotMsgsPerUserPer10Min,
     ...(flow ? { whatsappFlowId: flow } : {}),
     privacyPolicyUrl, termsVersion, maxAudioBytes, analyzerTimeoutMs,

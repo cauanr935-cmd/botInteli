@@ -27,6 +27,12 @@ export interface Repo extends BudgetRepo, MentoriaRepo {
   recordSensitiveEvent(waIdHash: string, level: "A" | "B", channel: string, at: Date): Promise<void>;
   /** Instante do último evento sensível da pessoa (null = nunca). Define o modo cuidado de 24 h. */
   lastSensitiveEventAt(waIdHash: string): Promise<Date | null>;
+  /**
+   * Opções (botões/lista) da última mensagem interativa enviada, em texto numerado. `null` apaga.
+   * Sem isto o "2" digitado pela pessoa não teria como voltar ao id da opção (canal Evolution/Baileys).
+   */
+  setPendingChoices(waIdHash: string, options: PendingChoiceOption[] | null, at: Date): Promise<void>;
+  getPendingChoices(waIdHash: string): Promise<{ options: PendingChoiceOption[]; createdAt: Date } | null>;
   /** Instantes (reserved_at) das mensagens do bot para a pessoa desde `since`. */
   listOutboundSince(waIdHash: string, since: Date): Promise<Date[]>;
   /** Etapa 5: serviços ativos (o corte em 10 e a ordenação final são do ContentProvider). */
@@ -228,6 +234,11 @@ export interface ConversationFields {
   optedOutAt: Date | null;
   lastServiceId?: string | null;
 }
+export interface PendingChoiceOption {
+  id: string;
+  title: string;
+}
+
 export interface StoredConversation extends ConversationFields {
   version: number;
 }
