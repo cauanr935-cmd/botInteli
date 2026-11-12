@@ -11,6 +11,7 @@ import type { Logger } from "../src/lib/logger";
 import { processEvents } from "../src/webhook/handler";
 import { sendGuarded } from "../src/whatsapp/client";
 import type { IncomingMessage, WebhookEvent } from "../src/whatsapp/types";
+import { asTransport } from "./helpers/transport";
 
 const NOW = new Date("2026-11-10T15:00:00Z");
 const WA = "5511987651234";
@@ -26,8 +27,8 @@ function setup() {
   );
   const send = (m: Parameters<typeof sendGuarded>[0]) =>
     sendGuarded(m, {
-      repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 950,
-      timezone: "America/Sao_Paulo", fetchImpl: graph as unknown as typeof fetch, now: () => NOW,
+      repo, logger, phoneNumberId: "PN", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst", stopAt: 950,
+      timezone: "America/Sao_Paulo", transport: asTransport(graph as never), now: () => NOW,
     });
   const deps = {
     repo, logger, send, maxPerDay: 50, maxPer10Min: 50, now: () => NOW,
@@ -35,8 +36,8 @@ function setup() {
   };
   const feed = async (ev: IncomingMessage) => {
     await processEvents([ev], {
-      appSecret: "", verifyToken: "", repo, logger, now: () => NOW,
-      onEvent: async (e: WebhookEvent) => { if (e.type !== "status") await handleIncomingMessage(e, deps); },
+      webhookToken: "", repo, logger, now: () => NOW,
+      onEvent: async (e: WebhookEvent) => { await handleIncomingMessage(e, deps); },
     });
   };
   const sent = () => graph.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string));

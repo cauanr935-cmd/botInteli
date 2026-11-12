@@ -14,6 +14,7 @@ import type { Logger } from "../src/lib/logger";
 import { processEvents } from "../src/webhook/handler";
 import { sendGuarded } from "../src/whatsapp/client";
 import type { IncomingMessage, WebhookEvent } from "../src/whatsapp/types";
+import { asTransport } from "./helpers/transport";
 
 const NOW = new Date("2026-11-10T15:00:00Z");
 const WA = "5511987651234";
@@ -32,14 +33,14 @@ function setup(opts: { max10?: number; maxDay?: number; graphOk?: boolean } = {}
   );
   const send = (m: Parameters<typeof sendGuarded>[0]) =>
     sendGuarded(m, {
-      repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 950,
-      timezone: "America/Sao_Paulo", fetchImpl: graph as unknown as typeof fetch, now: () => NOW,
+      repo, logger, phoneNumberId: "PN", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst", stopAt: 950,
+      timezone: "America/Sao_Paulo", transport: asTransport(graph as never), now: () => NOW,
     });
   const deps = { repo, logger, send, maxPerDay: opts.maxDay ?? 12, maxPer10Min: opts.max10 ?? 4, now: () => NOW };
   const feed = async (ev: IncomingMessage) => {
     await processEvents([ev], {
-      appSecret: "", verifyToken: "", repo, logger, now: () => NOW,
-      onEvent: async (e: WebhookEvent) => { if (e.type !== "status") await handleIncomingMessage(e, deps); },
+      webhookToken: "", repo, logger, now: () => NOW,
+      onEvent: async (e: WebhookEvent) => { await handleIncomingMessage(e, deps); },
     });
   };
   const bodies = () =>
@@ -307,11 +308,12 @@ describe("persistência e integração", () => {
     await s.feed(text("oi"));
     expect(s.graph).toHaveBeenCalledTimes(1);
   });
-  it("janela fechada (última mensagem há mais de 23h30) => sendGuarded bloqueia", async () => {
+  it("sem janela de 24h: quem falou há dias recebe; quem nunca falou ao bot não recebe (anti-ban)", async () => {
     const s = setup();
-    await s.repo.touchUser(WA, new Date(NOW.getTime() - 24 * 3_600_000));
-    await s.deps.send({ to: WA, type: "text", text: { body: "x" } });
-    expect(s.graph).not.toHaveBeenCalled();
+    await s.repo.touchUser(WA, new Date(NOW.getTime() - 5 * 24 * 3_600_000));
+    expect((await s.deps.send({ to: WA, type: "text", text: { body: "x" } })).status).toBe("sent");
+    expect((await s.deps.send({ to: "5511000000000", type: "text", text: { body: "x" } })).status).toBe("blocked_unknown_contact");
+    expect(s.graph).toHaveBeenCalledTimes(1);
   });
   it("usuários diferentes têm estados independentes", async () => {
     const s = setup();

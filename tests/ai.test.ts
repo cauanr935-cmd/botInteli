@@ -64,7 +64,7 @@ describe("cliente do Grok", () => {
   });
   it("provedor pela chave: gsk_ = Groq, xai- = xAI; AI_MODEL/AI_BASE_URL sobrescrevem; nomes antigos valem", () => {
     const base = {
-      WHATSAPP_TOKEN: "t", PHONE_NUMBER_ID: "1", APP_SECRET: "s", VERIFY_TOKEN: "v", GRAPH_API_VERSION: "v21.0",
+      EVOLUTION_URL: "https://evo.example.com", EVOLUTION_API_KEY: "k", EVOLUTION_INSTANCE: "inst", EVOLUTION_WEBHOOK_TOKEN: "token-webhook-123456",
       SUPABASE_URL: "https://x.supabase.co", SUPABASE_SERVICE_KEY: "k", ADMIN_TOKEN: "a", PRIVACY_POLICY_URL: "https://e.com", TERMS_VERSION: "1",
     };
     const g = loadConfig({ ...base, XAI_API_KEY: "gsk_abc" }); // o segredo antigo com chave do Groq passa a funcionar
@@ -75,7 +75,7 @@ describe("cliente do Grok", () => {
   });
   it("createAgent só existe com chave; AI_BASE_URL precisa ser https", () => {
     const base = {
-      WHATSAPP_TOKEN: "t", PHONE_NUMBER_ID: "1", APP_SECRET: "s", VERIFY_TOKEN: "v", GRAPH_API_VERSION: "v21.0",
+      EVOLUTION_URL: "https://evo.example.com", EVOLUTION_API_KEY: "k", EVOLUTION_INSTANCE: "inst", EVOLUTION_WEBHOOK_TOKEN: "token-webhook-123456",
       SUPABASE_URL: "https://x.supabase.co", SUPABASE_SERVICE_KEY: "k", ADMIN_TOKEN: "a", PRIVACY_POLICY_URL: "https://e.com", TERMS_VERSION: "1",
     };
     expect(createAgent(loadConfig(base))).toBeUndefined();
@@ -472,18 +472,18 @@ describe("diagnóstico do envio ao WhatsApp", () => {
     await repo.touchUser("5511999990000", new Date());
     return {
       repo, logger: { log: (level: string, event: string, data?: unknown) => void logs.push({ level, event, data }) },
-      phoneNumberId: "1", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 950, timezone: "America/Sao_Paulo",
+      phoneNumberId: "1", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst", stopAt: 950, timezone: "America/Sao_Paulo",
       fetchImpl: f as typeof fetch,
     };
   };
-  it("erro HTTP da Meta: loga status e código do erro (sem telefone) e devolve error", async () => {
+  it("erro HTTP da Evolution: loga status e detalhe (sem telefone) e devolve error", async () => {
     const logs: { level: string; event: string; data?: unknown }[] = [];
-    const f = async () => new Response(JSON.stringify({ error: { message: "Recipient 5511999990000 not in allowed list", type: "OAuthException", code: 131030 } }), { status: 400 });
+    const f = async () => new Response(JSON.stringify({ response: { message: ["Number 5511999990000 not on WhatsApp"] } }), { status: 400 });
     const r = await sendGuarded({ to: "5511999990000", type: "text", text: { body: "oi" } } as never, await ctx(f, logs) as never);
     expect(r).toEqual({ status: "error", code: "http_400" });
     const l = logs.find((x) => x.event === "whatsapp_send_failed")!;
     expect(l.level).toBe("warn");
-    expect(l.data).toMatchObject({ status: 400, metaCode: 131030, metaType: "OAuthException" });
+    expect(l.data).toMatchObject({ status: 400, code: "http_400" });
     expect(JSON.stringify(l.data)).not.toContain("5511999990000");
   });
   it("exceção de rede: loga whatsapp_send_exception e não lança", async () => {

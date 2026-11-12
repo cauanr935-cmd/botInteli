@@ -8,6 +8,7 @@ import { sendGuarded, type MediaClient } from "../../../src/whatsapp/client";
 import { hashWaId } from "../../../src/lib/hash";
 import type { Logger } from "../../../src/lib/logger";
 import type { AudioEvent } from "../../../src/whatsapp/types";
+import { asTransport } from "../../helpers/transport";
 
 const T0 = new Date("2026-11-10T15:00:00Z");
 const WA = "5511987651234";
@@ -21,7 +22,7 @@ async function setup(analyzer: AudioAnalyzer, store = new MemoryAudioStore()) {
   const graph = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: `o${++n}` }] }), { status: 200 }));
   const now = () => T0;
   const send = (m: Parameters<typeof sendGuarded>[0]) =>
-    sendGuarded(m, { repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 950, timezone: "America/Sao_Paulo", fetchImpl: graph as unknown as typeof fetch, now });
+    sendGuarded(m, { repo, logger, phoneNumberId: "PN", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst", stopAt: 950, timezone: "America/Sao_Paulo", transport: asTransport(graph as never), now });
   const media: MediaClient = {
     getInfo: async () => ({ url: "https://c/a", mimeType: "audio/ogg", fileSize: 10 }),
     download: async () => ({ ok: true, bytes: new Uint8Array(10).fill(1) }),

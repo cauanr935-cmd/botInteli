@@ -1,4 +1,4 @@
-// Simulador ponta a ponta (Etapa 8). Sem rede: Graph API falsa que conta envios, banco em memória,
+// Simulador ponta a ponta (Etapa 8). Sem rede: transporte falso que conta envios, banco em memória,
 // R2 e analisador falsos, relógio controlável. Usa a mesma fiação de produção (route -> webhook ->
 // createEventHandler -> motor -> sendGuarded). Executado pelos testes: `npm run simulate`.
 import type { IntentAgent } from "../src/ai/agent";
@@ -9,15 +9,15 @@ import { MockAudioAnalyzer } from "../src/audio/analyzer";
 import { MemoryAudioStore } from "../src/audio/storage";
 import { ContentProvider } from "../src/services/provider";
 import { createEventHandler } from "../src/webhook/events";
-import { signBody } from "../src/whatsapp/signature";
-import { monthKey } from "../src/budget/month";
+import { TOKEN as WEBHOOK_TOKEN, upsert } from "../tests/helpers/evolution";
+import { dayKey } from "../src/budget/month";
 import { UNLOCK_CONFIRM } from "../src/admin/budget";
 import type { Logger, LogLevel } from "../src/lib/logger";
 import type { MediaClient } from "../src/whatsapp/client";
+import { asTransport } from "../tests/helpers/transport";
 
-const APP_SECRET = "sim-secret";
 const ADMIN_TOKEN = "sim-admin";
-const PHONE_NUMBER_ID = "SIMPN";
+const INSTANCE = "simpn"; // nome da instância da Evolution (chave da trava e do contador)
 export const MINUTE = 60_000;
 export const HOUR = 60 * MINUTE;
 
@@ -26,7 +26,7 @@ export interface SimOptions {
   env?: Record<string, string>;
   /** Agente de IA falso (testes): sem rede. */
   agent?: IntentAgent;
-  /** Entrega cada webhook duas vezes (a Meta reenvia). */
+  /** Entrega cada webhook duas vezes (a Evolution pode reenviar). */
   duplicateAll?: boolean;
 }
 
@@ -50,7 +50,8 @@ export class Simulator {
     this.t = (o.start ?? new Date("2026-11-10T15:00:00Z")).getTime();
     this.duplicateAll = o.duplicateAll ?? false;
     this.cfg = loadConfig({
-      WHATSAPP_TOKEN: "tok", PHONE_NUMBER_ID, APP_SECRET, VERIFY_TOKEN: "v", GRAPH_API_VERSION: "v21.0",
+      EVOLUTION_URL: "https://evo.sim.invalid", EVOLUTION_API_KEY: "k", EVOLUTION_INSTANCE: INSTANCE,
+      EVOLUTION_WEBHOOK_TOKEN: WEBHOOK_TOKEN, ANTI_FLOOD_MAX_PER_DAY: "950",
       SUPABASE_URL: "https://sim.invalid", SUPABASE_SERVICE_KEY: "k", ANALYZER_API_URL: "https://analyzer.invalid",
       ANALYZER_API_KEY: "k", ADMIN_TOKEN, PRIVACY_POLICY_URL: "https://example.com/privacidade", TERMS_VERSION: "sim-1",
       // O cadastro novo tem ~7 mensagens do bot: os limites por pessoa da simulação seguem a produção (wrangler.toml).
@@ -75,15 +76,15 @@ export class Simulator {
       download: async () => ({ ok: true, bytes: new Uint8Array(100).fill(7) }),
     };
     this.deps = {
-      appSecret: APP_SECRET, verifyToken: "v", repo: this.repo, logger, now: () => this.now(),
+      webhookToken: WEBHOOK_TOKEN, repo: this.repo, logger, now: () => this.now(),
       onEvent: createEventHandler(this.cfg, {
-        repo: this.repo, logger, content, fetchImpl: graph as unknown as typeof fetch, now: () => this.now(),
+        repo: this.repo, logger, content, transport: asTransport(graph as never), now: () => this.now(),
         audio: { media, store: this.store, analyzer: this.analyzer },
         ...(o.agent ? { agent: o.agent } : {}),
       }),
       admin: {
-        adminToken: ADMIN_TOKEN, repo: this.repo, logger, phoneNumberId: PHONE_NUMBER_ID,
-        stopAt: this.cfg.stopAt, timezone: this.cfg.metaAccountTimezone, now: () => this.now(),
+        adminToken: ADMIN_TOKEN, repo: this.repo, logger, phoneNumberId: INSTANCE,
+        stopAt: this.cfg.stopAt, timezone: this.cfg.timezone, now: () => this.now(),
       },
     };
   }
@@ -94,23 +95,20 @@ export class Simulator {
   get sentCount(): number { return this.sent.length; }
   sentTo(phone: string): SentMessage[] { return this.sent.filter((m) => m.to === phone); }
   phone(i: number): string { return `5511${String(900000000 + i)}`; }
-  month(): string { return monthKey(this.now(), this.cfg.metaAccountTimezone); }
+  /** Chave do dia do contador anti-flood. */
+  period(): string { return dayKey(this.now(), this.cfg.timezone); }
   async reserved(): Promise<number> {
-    return (await this.repo.getBudget(PHONE_NUMBER_ID, this.month()))?.reservedCount ?? 0;
+    return (await this.repo.getBudget(INSTANCE, this.period()))?.reservedCount ?? 0;
   }
 
-  /** Envia o webhook assinado; espera o processamento (waitUntil) e guarda o status HTTP. */
-  private async post(value: Record<string, unknown>): Promise<number> {
-    const payload = JSON.stringify({
-      object: "whatsapp_business_account",
-      entry: [{ id: "WABA", changes: [{ field: "messages", value: {
-        messaging_product: "whatsapp", metadata: { phone_number_id: PHONE_NUMBER_ID }, ...value } }] }],
-    });
+  /** Envia o webhook `messages.upsert` com o token; espera o processamento (waitUntil) e guarda o status HTTP. */
+  private async post(message: Record<string, unknown>, from: string, id: string): Promise<number> {
+    const payload = JSON.stringify(upsert(message, { id, jid: `${from}@s.whatsapp.net`, ts: Math.floor(this.t / 1000) }));
     const times = this.duplicateAll ? 2 : 1;
     let last = 0;
     for (let i = 0; i < times; i++) {
       const req = new Request("https://bot.sim.invalid/webhook", {
-        method: "POST", body: payload, headers: { "X-Hub-Signature-256": await signBody(payload, APP_SECRET) },
+        method: "POST", body: payload, headers: { "x-webhook-token": WEBHOOK_TOKEN },
       });
       const res = await route(req, { waitUntil: (p) => void this.pending.push(p) }, this.deps);
       await Promise.all(this.pending.splice(0));
@@ -120,34 +118,29 @@ export class Simulator {
     return last;
   }
 
-  private message(from: string, extra: Record<string, unknown>): Promise<number> {
-    return this.post({
-      contacts: [{ profile: { name: "Pessoa" }, wa_id: from }],
-      messages: [{ from, id: `wamid.IN${++this.seq}`, timestamp: String(Math.floor(this.t / 1000)), ...extra }],
-    });
+  private message(from: string, extra: Record<string, unknown>, idPrefix = "IN"): Promise<number> {
+    return this.post(extra, from, `${idPrefix}${++this.seq}`);
   }
-  text(from: string, body: string) { return this.message(from, { type: "text", text: { body } }); }
+  text(from: string, body: string) { return this.message(from, { conversation: body }); }
+  /** Resposta de botão (chega como buttonsResponseMessage; o motor só vê o id). */
   button(from: string, id: string) {
-    return this.message(from, { type: "interactive", interactive: { type: "button_reply", button_reply: { id, title: "x" } } });
+    return this.message(from, { buttonsResponseMessage: { selectedButtonId: id, selectedDisplayText: "x" } });
   }
   list(from: string, id: string) {
-    return this.message(from, { type: "interactive", interactive: { type: "list_reply", list_reply: { id, title: "x" } } });
+    return this.message(from, { listResponseMessage: { title: "x", singleSelectReply: { selectedRowId: id } } });
   }
   document(from: string, mime = "application/pdf", filename = "duvidas.pdf") {
-    return this.message(from, { type: "document", document: { id: "DOC1", mime_type: mime, filename } });
+    return this.message(from, { documentMessage: { mimetype: mime, fileName: filename } }, "DOC");
   }
   audio(from: string) {
-    return this.message(from, { type: "audio", audio: { id: "MEDIA1", mime_type: "audio/ogg; codecs=opus", voice: true } });
+    return this.message(from, { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true } }, "MEDIA");
   }
   /** Contato compartilhado (anexo > Contato): cada item vira um telefone do contato. */
   contacts(from: string, phones: { wa_id?: string; phone?: string }[]) {
-    return this.message(from, { type: "contacts", contacts: phones.map((ph) => ({ name: { formatted_name: "Fulano" }, phones: [ph] })) });
+    const vcards = phones.map((ph) => `BEGIN:VCARD\nVERSION:3.0\nFN:Fulano\nTEL;type=CELL${ph.wa_id ? `;waid=${ph.wa_id}` : ""}:${ph.phone ?? ph.wa_id ?? ""}\nEND:VCARD`);
+    return this.message(from, { contactsArrayMessage: { contacts: vcards.map((vcard) => ({ displayName: "Fulano", vcard })) } });
   }
-  sticker(from: string) { return this.message(from, { type: "sticker", sticker: { id: "S1", mime_type: "image/webp" } }); }
-  /** Status webhook de uma mensagem nossa, com pricing. */
-  status(wamid: string, pricing: Record<string, unknown>) {
-    return this.post({ statuses: [{ id: wamid, status: "sent", recipient_id: "x", timestamp: String(Math.floor(this.t / 1000)), pricing }] });
-  }
+  sticker(from: string) { return this.message(from, { stickerMessage: {} }); }
   async unlock(): Promise<number> {
     const res = await route(new Request(`https://bot.sim.invalid/admin/budget/unlock?confirm=${UNLOCK_CONFIRM}`, {
       method: "POST", headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
@@ -174,7 +167,7 @@ export interface Metrics {
 
 const allOk = (s: Simulator) => s.statuses.every((c) => c === 200);
 
-/** S1: 400 pessoas novas enviam cadastro + áudio de apresentação, no mesmo mês. */
+/** S1: 400 pessoas novas enviam cadastro + áudio de apresentação, no mesmo dia (teto anti-flood de 950/dia). */
 export async function runS1(): Promise<Metrics> {
   const s = new Simulator();
   const N = 400;
@@ -196,8 +189,8 @@ export async function runS1(): Promise<Metrics> {
   return {
     people: N, stopAt: s.cfg.stopAt, sends: s.sentCount, reserved: await s.reserved(),
     sendsAfterCut: afterCut, cutReached: cutAt >= 0, allWebhooks200: allOk(s), webhooks: s.statuses.length,
-    critical: s.logs.filter((l) => l.level === "critical" && l.event === "budget_circuit_open").length,
-    warn80: s.logs.filter((l) => l.event === "budget_80_percent").length,
+    critical: s.logs.filter((l) => l.level === "critical" && l.event === "flood_limit_reached").length,
+    warn80: s.logs.filter((l) => l.event === "flood_limit_80_percent").length,
   };
 }
 
@@ -259,17 +252,17 @@ export async function runS4(): Promise<Metrics> {
   };
 }
 
-/** S5: status com billable:true no meio -> nada sai até o unlock manual. */
+/** S5: trava manual ligada no meio (ação humana/admin) -> nada sai até o unlock manual. */
 export async function runS5(): Promise<Metrics> {
   const s = new Simulator();
   const people = 40;
   for (let i = 0; i < 20; i++) { await s.text(s.phone(i), "oi"); s.advance(1000); }
   const beforeSignal = s.sentCount;
-  await s.status(`wamid.OUT1`, { billable: true, pricing_model: "PMP", type: "regular", category: "marketing" });
+  await s.repo.setManualLock(INSTANCE, "simulação: trava ligada por um humano");
   for (let i = 20; i < people; i++) { await s.text(s.phone(i), "oi"); s.advance(1000); }
   for (let i = 0; i < 20; i++) { await s.button(s.phone(i), "consent_yes"); s.advance(1000); }
   const afterSignal = s.sentCount - beforeSignal;
-  const lockedWhileOpen = (await s.repo.getManualLock(PHONE_NUMBER_ID)).locked;
+  const lockedWhileOpen = (await s.repo.getManualLock(INSTANCE)).locked;
   const unlockStatus = await s.unlock();
   s.advance(MINUTE);
   const preResume = s.sentCount;
@@ -277,30 +270,29 @@ export async function runS5(): Promise<Metrics> {
   return {
     sendsBeforeSignal: beforeSignal, sendsAfterSignalUntilUnlock: afterSignal, lockedWhileOpen, unlockStatus,
     sendsAfterUnlock: s.sentCount - preResume, allWebhooks200: allOk(s),
-    critical: s.logs.filter((l) => l.level === "critical").length,
   };
 }
 
-/** S6: contador zera à meia-noite do dia 1 no fuso configurado (America/Sao_Paulo = UTC-3). */
+/** S6: o contador anti-flood zera à meia-noite do fuso configurado (America/Sao_Paulo = UTC-3). */
 export async function runS6(): Promise<Metrics> {
   const s = new Simulator({ start: new Date("2026-11-30T20:00:00Z") });
   const stopAt = s.cfg.stopAt;
-  for (let i = 0; i < stopAt; i++) await s.repo.reserveSlot(PHONE_NUMBER_ID, "2026-11", stopAt);
+  for (let i = 0; i < stopAt; i++) await s.repo.reserveSlot(INSTANCE, "2026-11-30", stopAt);
   const p = s.phone(1);
   await s.text(p, "oi");
-  const sendsNovFull = s.sentCount;
-  // 02:59:30Z de 1/12 = 23:59:30 de 30/11 em São Paulo: ainda novembro
+  const sendsDayFull = s.sentCount;
+  // 02:59:30Z de 1/12 = 23:59:30 de 30/11 em São Paulo: ainda o mesmo dia
   s.setTime(new Date("2026-12-01T02:59:30Z"));
   await s.text(s.phone(2), "oi");
-  const sendsLastSecondsNov = s.sentCount;
-  // 03:00:30Z = 00:00:30 de 1/12 em São Paulo: dezembro
+  const sendsLastSeconds = s.sentCount;
+  // 03:00:30Z = 00:00:30 de 1/12 em São Paulo: dia novo
   s.setTime(new Date("2026-12-01T03:00:30Z"));
   await s.text(s.phone(3), "oi");
   return {
-    stopAt, sendsWhileNovemberFull: sendsNovFull, sendsLastSecondsNovember: sendsLastSecondsNov,
-    sendsAfterMidnight: s.sentCount - sendsLastSecondsNov,
-    novemberReserved: (await s.repo.getBudget(PHONE_NUMBER_ID, "2026-11"))?.reservedCount ?? -1,
-    decemberReserved: (await s.repo.getBudget(PHONE_NUMBER_ID, "2026-12"))?.reservedCount ?? -1,
+    stopAt, sendsWhileDayFull: sendsDayFull, sendsLastSecondsOfDay: sendsLastSeconds,
+    sendsAfterMidnight: s.sentCount - sendsLastSeconds,
+    dayFullReserved: (await s.repo.getBudget(INSTANCE, "2026-11-30"))?.reservedCount ?? -1,
+    nextDayReserved: (await s.repo.getBudget(INSTANCE, "2026-12-01"))?.reservedCount ?? -1,
     allWebhooks200: allOk(s),
   };
 }

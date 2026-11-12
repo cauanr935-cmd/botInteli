@@ -23,21 +23,21 @@ function setup() {
 }
 
 describe("cron scheduled", () => {
-  it("C7.1 faz a consulta leve, limpa processed_messages > 7 dias e loga o uso do mês", async () => {
+  it("C7.1 faz a consulta leve, limpa processed_messages > 7 dias e loga o uso do anti-flood", async () => {
     const { lines, repo, deps } = setup();
     let pinged = 0;
     const orig = repo.ping.bind(repo);
     repo.ping = async () => { pinged++; await orig(); };
     await repo.claimMessage("velho", new Date(NOW.getTime() - PROCESSED_RETENTION_MS - 1000));
     await repo.claimMessage("novo", new Date(NOW.getTime() - 6 * DAY));
-    await repo.reserveSlot("PN", "2026-11", 950);
-    await repo.reserveSlot("PN", "2026-11", 950);
+    await repo.reserveSlot("PN", "2026-11-15", 950);
+    await repo.reserveSlot("PN", "2026-11-15", 950);
     await runScheduled(deps);
     expect(pinged).toBe(1);
     expect(repo.processed.has("velho")).toBe(false);
     expect(repo.processed.has("novo")).toBe(true);
     const usage = lines.find((l) => l.event === "cron_budget_usage");
-    expect(usage).toMatchObject({ month: "2026-11", reserved_count: 2, stop_at: 950 });
+    expect(usage).toMatchObject({ period: "2026-11-15", reserved_count: 2, stop_at: 950 });
     expect(lines.find((l) => l.event === "cron_processed_cleanup")).toMatchObject({ removed: 1 });
   });
 
@@ -105,11 +105,10 @@ describe("build e higiene", () => {
   });
   it("C7.3 DEPLOY.md cobre os passos das pendências humanas e o checklist de produção", () => {
     for (const t of [
-      "Meta for Developers", "Cloudflare", "Supabase", "wrangler secret put", "wrangler r2 bucket create",
-      "0007_audios.sql", "0008_housekeeping.sql", "0002_budget.sql", "flows/cadastro.json", "WHATSAPP_FLOW_ID",
-      "Callback URL", "número de teste", "5 destinatários", "chip", "PIN de duas etapas", "recargas",
-      "Meta Business Manager", "política de privacidade", "Billing Hub", "forma de pagamento", "/admin/budget",
-      "retenção", "META_ACCOUNT_TIMEZONE", "ANALYZER_API_URL",
+      "Oracle Cloud", "Cloudflare", "Supabase", "wrangler secret put", "wrangler r2 bucket create",
+      "0007_audios.sql", "0008_housekeeping.sql", "0002_budget.sql", "0017_pending_choices.sql", "x-webhook-token",
+      "/instance/create", "WHATSAPP-BAILEYS", "QR Code", "MESSAGES_UPSERT", "chip", "banimento", "ANTI_FLOOD_MAX_PER_DAY",
+      "texto numerado", "política de privacidade", "/admin/budget", "retenção", "TIMEZONE", "ANALYZER_API_URL",
     ]) expect(deploy, t).toContain(t);
     // todas as migrações existentes são citadas
     for (const f of readdirSync(join(root, "supabase/migrations")).filter((n) => n.endsWith(".sql"))) expect(deploy, f).toContain(f);
@@ -118,7 +117,7 @@ describe("build e higiene", () => {
     expect(statSync(join(root, ".dev.vars.example")).isFile()).toBe(true);
     const ex = readFileSync(join(root, ".dev.vars.example"), "utf8");
     for (const l of ex.split("\n")) {
-      const m = /^(WHATSAPP_TOKEN|APP_SECRET|VERIFY_TOKEN|SUPABASE_SERVICE_KEY|ANALYZER_API_KEY|ADMIN_TOKEN)=(.*)$/.exec(l);
+      const m = /^(EVOLUTION_API_KEY|EVOLUTION_WEBHOOK_TOKEN|SUPABASE_SERVICE_KEY|ANALYZER_API_KEY|ADMIN_TOKEN)=(.*)$/.exec(l);
       if (m) expect(m[2]).toBe("");
     }
     expect(readFileSync(join(root, "wrangler.toml"), "utf8")).not.toMatch(/TOKEN\s*=|SECRET\s*=|SERVICE_KEY\s*=|API_KEY\s*=/);

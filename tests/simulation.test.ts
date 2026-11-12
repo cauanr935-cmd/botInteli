@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { runS1, runS2, runS3, runS4, runS5, runS6, runS7 } from "../scripts/simulate";
 
 describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
-  it("C8.1 S1 estouro de orçamento: cadastros com áudio não passam de stop_at; zero envios depois do corte; webhook sempre 200", async () => {
+  it("C8.1 S1 teto anti-flood diário: cadastros com áudio não passam do teto; zero envios depois do corte; webhook sempre 200", async () => {
     const m = await runS1();
     expect(m.stopAt).toBe(950);
     expect(m.sends).toBeLessThanOrEqual(950);
@@ -21,7 +21,7 @@ describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
     expect(m.allWebhooks200).toBe(true);
   });
 
-  it("C8.1 S3: cadastro com Flow, áudio de apresentação, menu explícito e uso de serviço", async () => {
+  it("C8.1 S3: cadastro, áudio de apresentação, menu explícito e uso de serviço", async () => {
     const m = await runS3();
     expect(m.newPerson).toBe(10); // 7 do cadastro + menu + serviço + resposta do áudio
     expect(m.extraAudio).toBe(0); // mentoria em andamento (falta descrevê-la): outro áudio = silêncio
@@ -39,24 +39,23 @@ describe("C8.1 simulação ponta a ponta (scripts/simulate.ts)", () => {
     expect(m.allWebhooks200).toBe(true);
   });
 
-  it("C8.1 S5 sinal de cobrança: billable:true no meio trava os envios até o unlock manual", async () => {
+  it("C8.1 S5 trava manual no meio: os envios param até o unlock manual (webhook segue 200)", async () => {
     const m = await runS5();
     expect(m.sendsBeforeSignal).toBe(20);
     expect(m.sendsAfterSignalUntilUnlock).toBe(0);
     expect(m.lockedWhileOpen).toBe(true);
     expect(m.unlockStatus).toBe(200);
     expect(m.sendsAfterUnlock).toBe(1);
-    expect(m.critical).toBeGreaterThanOrEqual(1);
     expect(m.allWebhooks200).toBe(true);
   });
 
-  it("C8.1 S6 virada do mês: novembro cheio bloqueia até 23:59 de SP; à meia-noite do dia 1 o contador zera", async () => {
+  it("C8.1 S6 virada do dia: teto cheio bloqueia até 23:59 de SP; à meia-noite o contador zera", async () => {
     const m = await runS6();
-    expect(m.sendsWhileNovemberFull).toBe(0);
-    expect(m.sendsLastSecondsNovember).toBe(0);
+    expect(m.sendsWhileDayFull).toBe(0);
+    expect(m.sendsLastSecondsOfDay).toBe(0);
     expect(m.sendsAfterMidnight).toBe(1);
-    expect(m.novemberReserved).toBe(950);
-    expect(m.decemberReserved).toBe(1);
+    expect(m.dayFullReserved).toBe(950);
+    expect(m.nextDayReserved).toBe(1);
     expect(m.allWebhooks200).toBe(true);
   });
 

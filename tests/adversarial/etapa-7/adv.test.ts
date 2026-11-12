@@ -14,14 +14,14 @@ describe("adversarial etapa 7", () => {
     const lines: string[] = [];
     const repo = new MemoryRepo();
     repo.deleteProcessedBefore = async () => { throw new Error("boom 5511999991234"); };
-    await repo.reserveSlot("PN", "2026-11", 950);
+    await repo.reserveSlot("PN", "2026-11-30", 950);
     await runScheduled({ repo, logger: createLogger((l) => lines.push(l)), phoneNumberId: "PN", stopAt: 950, timezone: "America/Sao_Paulo", now: () => NOW });
     const all = lines.join("\n");
     expect(all).toContain("cron_budget_usage");
-    expect(all).toContain('"month":"2026-11"');
+    expect(all).toContain('"period":"2026-11-30"');
     expect(all).not.toContain("5511999991234");
   });
-  it("cron: com disjuntor aberto não reserva nem envia", async () => {
+  it("cron: nunca reserva nem envia", async () => {
     const repo = new MemoryRepo();
     await runScheduled({ repo, logger: createLogger(() => undefined), phoneNumberId: "PN", stopAt: 950, timezone: "America/Sao_Paulo", now: () => NOW });
     expect(repo.outbound).toHaveLength(0);
@@ -36,9 +36,10 @@ describe("adversarial etapa 7", () => {
     expect(r.rows[0]!.n).toBe(0);
     await db.exec(`insert into processed_messages (wamid, received_at) values ('x', now() - interval '8 days'), ('y', now())`).catch(() => undefined);
   });
-  it("todas as migrações citadas e variáveis do wrangler.toml no DEPLOY", () => {
+  it("todas as migrações citadas e e o anti-ban no DEPLOY", () => {
     const d = readFileSync(join(root, "docs/DEPLOY.md"), "utf8");
     for (const f of readdirSync(join(root, "supabase/migrations")).filter((n) => n.endsWith(".sql"))) expect(d).toContain(f);
-    expect(d).toMatch(/Billing Hub/);
+    expect(d).toMatch(/ANTI_FLOOD_MAX_PER_DAY/);
+    expect(d).toMatch(/banimento/);
   });
 });

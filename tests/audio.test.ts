@@ -8,11 +8,14 @@ import { ContentProvider } from "../src/services/provider";
 import { processAudio, MEDIA_URL_TTL_MS } from "../src/audio/pipeline";
 import { AnalyzerError, HttpAudioAnalyzer, MockAudioAnalyzer, type AudioAnalyzer } from "../src/audio/analyzer";
 import { MemoryAudioStore } from "../src/audio/storage";
-import { createMediaClient, sendGuarded, type DownloadResult, type MediaClient, type MediaInfo } from "../src/whatsapp/client";
+import { createMediaClient } from "../src/whatsapp/evolutionClient";
+import { upsert } from "./helpers/evolution";
+import { sendGuarded, type DownloadResult, type MediaClient, type MediaInfo } from "../src/whatsapp/client";
 import { processEvents } from "../src/webhook/handler";
 import { hashWaId } from "../src/lib/hash";
 import type { Logger } from "../src/lib/logger";
 import type { AudioEvent, IncomingMessage, WebhookEvent } from "../src/whatsapp/types";
+import { asTransport } from "./helpers/transport";
 
 const T0 = new Date("2026-11-10T15:00:00Z");
 const WA = "5511987651234";
@@ -51,8 +54,8 @@ function setup(o: Opts = {}) {
   const provider = new ContentProvider(repo, logger, 60_000, () => t);
   const send = (m: Parameters<typeof sendGuarded>[0]) =>
     sendGuarded(m, {
-      repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 950,
-      timezone: "America/Sao_Paulo", fetchImpl: graph as unknown as typeof fetch, now,
+      repo, logger, phoneNumberId: "PN", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst", stopAt: 950,
+      timezone: "America/Sao_Paulo", transport: asTransport(graph as never), now,
     });
   const maxPer10Min = o.maxPer10Min ?? 50;
   const audioDeps = {
@@ -65,8 +68,8 @@ function setup(o: Opts = {}) {
   };
   const feed = async (ev: IncomingMessage) => {
     await processEvents([ev], {
-      appSecret: "", verifyToken: "", repo, logger, now,
-      onEvent: async (e: WebhookEvent) => { if (e.type !== "status") await handleIncomingMessage(e, deps); },
+      webhookToken: "", repo, logger, now,
+      onEvent: async (e: WebhookEvent) => { await handleIncomingMessage(e, deps); },
     });
   };
   const sent = () => graph.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string));
@@ -134,23 +137,29 @@ describe("C6.1 URL da mídia expira em 5 minutos", () => {
     expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
   });
 
-  it("C6.1 cliente de mídia: GET /{media_id} com token e download com token", async () => {
-    const calls: { url: string; auth: string | null }[] = [];
+  it("C6.1 cliente de mídia (Evolution): getInfo só embrulha o id; download pede base64 com apikey", async () => {
+    const calls: { url: string; apikey: string | null; body: unknown }[] = [];
     const f = vi.fn(async (url: string, init?: RequestInit) => {
-      calls.push({ url, auth: new Headers(init?.headers).get("authorization") });
-      return url.includes("graph.facebook.com")
-        ? new Response(JSON.stringify({ url: "https://cdn.example/x", mime_type: "audio/ogg", file_size: 3 }))
-        : new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/ogg" } });
+      calls.push({ url, apikey: new Headers(init?.headers).get("apikey"), body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify({ base64: btoa("\x01\x02\x03"), mimetype: "audio/ogg" }), { status: 201 });
     });
-    const c = createMediaClient({ whatsappToken: "TOK", graphApiVersion: "v21.0", fetchImpl: f as unknown as typeof fetch });
+    const c = createMediaClient({ url: "https://evo.test", apiKey: "KEY", instance: "inst", fetchImpl: f as unknown as typeof fetch });
     const info = await c.getInfo("ID_1");
-    expect(info).toEqual({ url: "https://cdn.example/x", mimeType: "audio/ogg", fileSize: 3 });
+    expect(info.url).toBe("evolution-media:ID_1");
     const dl = await c.download(info.url, 10);
-    expect(dl).toMatchObject({ ok: true });
-    expect(calls.map((x) => x.auth)).toEqual(["Bearer TOK", "Bearer TOK"]);
-    expect(calls[0]!.url).toBe("https://graph.facebook.com/v21.0/ID_1");
+    expect(dl).toEqual({ ok: true, bytes: new Uint8Array([1, 2, 3]), contentType: "audio/ogg" });
+    expect(calls[0]).toMatchObject({ url: "https://evo.test/chat/getBase64FromMediaMessage/inst", apikey: "KEY", body: { message: { key: { id: "ID_1" } } } });
     await expect(c.getInfo("../x")).rejects.toThrow();
     expect(await c.download(info.url, 2)).toEqual({ ok: false, reason: "too_large" });
+    expect(await c.download("https://outro.host/x", 10)).toEqual({ ok: false, reason: "error" });
+  });
+
+  it("C6.1 cliente de mídia: 404 = expirada; erro HTTP/rede/base64 ausente = error", async () => {
+    const mk = (r: () => Promise<Response>) => createMediaClient({ url: "https://evo.test", apiKey: "k", instance: "inst", fetchImpl: r as unknown as typeof fetch });
+    expect(await mk(async () => new Response("x", { status: 404 })).download("evolution-media:A", 10)).toEqual({ ok: false, reason: "expired" });
+    expect(await mk(async () => new Response("x", { status: 500 })).download("evolution-media:A", 10)).toEqual({ ok: false, reason: "error" });
+    expect(await mk(async () => { throw new Error("rede"); }).download("evolution-media:A", 10)).toEqual({ ok: false, reason: "error" });
+    expect(await mk(async () => new Response("{}", { status: 201 })).download("evolution-media:A", 10)).toEqual({ ok: false, reason: "error" });
   });
 });
 
@@ -250,12 +259,12 @@ describe("C6.4 analisador lento ou com erro", () => {
     expect(s.repo.audios.size).toBe(0);
     expect((await s.repo.getConversation(WA)).state).toBe("AWAIT_AUDIO");
   });
-  it("C6.4 a mensagem de erro conta no orçamento (reserva) e nos limites da pessoa", async () => {
+  it("C6.4 a mensagem de erro conta no anti-flood (reserva) e nos limites da pessoa", async () => {
     const s = setup({ download: async () => ({ ok: false, reason: "error" }) });
     await s.ready();
     await s.feed(audio());
     expect(s.repo.outbound).toHaveLength(1);
-    expect((await s.repo.getBudget("PN", "2026-11"))?.reservedCount).toBe(1);
+    expect((await s.repo.getBudget("PN", "2026-11-10"))?.reservedCount).toBe(1);
   });
   it("C6.4 depois de um erro, um áudio bom volta a seguir o fluxo (pergunta do papel)", async () => {
     let n = 0;
@@ -278,13 +287,13 @@ describe("C6.4 analisador lento ou com erro", () => {
   });
 });
 
-describe("C6.5 janela de 24h", () => {
-  it("C6.5 janela fechada durante o download: não envia, mas o arquivo fica guardado e a conversa avança", async () => {
+describe("C6.5 sem janela de 24h", () => {
+  it("C6.5 resposta sai mesmo muito tempo depois (o Baileys não tem janela): arquivo guardado e conversa avança", async () => {
     const s = setup({ download: async () => { w.warp(24 * 3600 * 1000); return { ok: true, bytes: bytes() }; } });
     const w = s;
     await s.ready();
     await s.feed(audio());
-    expect(s.graph).not.toHaveBeenCalled();
+    expect(s.graph).toHaveBeenCalledTimes(1);
     expect(s.repo.audios.size).toBe(1);
     expect((await s.repo.getConversation(WA)).state).toBe("MENT_ROLE");
   });
@@ -423,15 +432,12 @@ describe("arquivos de áudio gravados antes (qualquer formato comum)", () => {
 
   it("webhook: arquivo de áudio anexado como 'Documento' vira áudio; PDF continua documento", async () => {
     const { parseWebhookPayload: parseWebhook } = await import("../src/whatsapp/parser");
-    const msg = (document: Record<string, string>) => parseWebhook({
-      object: "whatsapp_business_account",
-      entry: [{ changes: [{ value: { messages: [{ id: "w1", from: "5511987651234", type: "document", document }] } }] }],
-    });
-    const a = msg({ id: "M1", mime_type: "audio/x-m4a", filename: "mentoria.m4a" });
+    const msg = (id: string, documentMessage: Record<string, string>) => parseWebhook(upsert({ documentMessage }, { id }));
+    const a = msg("M1", { mimetype: "audio/x-m4a", fileName: "mentoria.m4a" });
     expect(a[0]).toMatchObject({ type: "audio", mediaId: "M1", mimeType: "audio/mp4", voice: false });
-    const b = msg({ id: "M2", mime_type: "application/octet-stream", filename: "mentoria.wav" });
+    const b = msg("M2", { mimetype: "application/octet-stream", fileName: "mentoria.wav" });
     expect(b[0]).toMatchObject({ type: "audio", mimeType: "audio/wav" });
-    const c = msg({ id: "M3", mime_type: "application/pdf", filename: "duvidas.pdf" });
+    const c = msg("M3", { mimetype: "application/pdf", fileName: "duvidas.pdf" });
     expect(c[0]).toMatchObject({ type: "document" });
   });
 

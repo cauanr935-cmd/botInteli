@@ -9,6 +9,7 @@ import { hashWaId } from "../src/lib/hash";
 import { housekeepMentorias } from "../src/mentoria/housekeeping";
 import { checkSubject, parseOccurredOn, phoneCandidates, sanitizeSubject } from "../src/mentoria/parse";
 import { parseWebhookPayload } from "../src/whatsapp/parser";
+import { upsert } from "./helpers/evolution";
 import type { IncomingMessage } from "../src/whatsapp/types";
 
 const mkSim = () => {
@@ -190,22 +191,18 @@ describe("Mentoria v2 / Etapa 1: adversariais", () => {
     expect(all[0]!.contestedReason).toBe("recusada");
   });
 
-  it("confirmação fora da janela de 23h30: não envia (sendGuarded) e aparece na próxima mensagem do parceiro", async () => {
+  it("sem janela de 24h: o parceiro que não fala há 25 h ainda recebe a pergunta de confirmação na hora", async () => {
     const s = mkSim();
     const a = s.phone(1), b = s.phone(2);
     await registered(s, a, "Ana Souza");
     await registered(s, b, "Bruno Lima");
-    s.advance(25 * HOUR); // a janela do Bruno fechou; a Ana volta a falar
+    s.advance(25 * HOUR); // no WhatsApp oficial a janela do Bruno teria fechado; no Baileys ele já é contato conhecido
     await s.text(a, "oi"); s.advance(1000);
     await untilPartner(s, a);
     const n = s.sentTo(b).length;
     await s.contacts(a, [{ wa_id: b }]); s.advance(1000);
-    expect(s.sentTo(b).length).toBe(n); // nada saiu
-    expect(bodyOf(s, a)).toMatch(/Pedimos a confirmação/); // a registrante recebe a resposta normal
-    const id = rows(s)[0]!.id;
-    expect(rows(s)[0]!.partnerPromptedAt).toBeUndefined();
-    await s.text(b, "oi"); s.advance(1000);
     expect(s.sentTo(b).length - n).toBe(1);
+    const id = rows(s)[0]!.id;
     expect(buttonsOf(s, b)).toEqual([`ment_ok:${id}`, `ment_no:${id}`]);
     expect(rows(s)[0]!.partnerPromptedAt).toBeInstanceOf(Date);
   });
@@ -317,11 +314,13 @@ describe("Mentoria v2 / Etapa 1: limpeza (cron) e dados", () => {
   });
 
   it("parser: contato compartilhado vira evento 'contacts' (sem número = unsupported)", () => {
-    const mk = (contacts: unknown) => parseWebhookPayload({ entry: [{ changes: [{ value: { messages: [{ id: "w", from: "5511", type: "contacts", contacts }] } }] }] });
-    const ok = mk([{ phones: [{ phone: "+55 11 9", wa_id: "5511900000001" }] }])[0] as IncomingMessage;
+    const mk = (message: Record<string, unknown>) => parseWebhookPayload(upsert(message, { id: "w" }));
+    const vcard = "BEGIN:VCARD\nVERSION:3.0\nFN:X\nTEL;type=CELL;waid=5511900000001:+55 11 9\nEND:VCARD";
+    const ok = mk({ contactMessage: { displayName: "X", vcard } })[0] as IncomingMessage;
     expect(ok).toMatchObject({ type: "contacts", contacts: [{ waId: "5511900000001", phone: "+55 11 9" }] });
-    expect(mk([{ name: { formatted_name: "X" } }])[0]).toMatchObject({ type: "unsupported" });
-    expect(mk("lixo")[0]).toMatchObject({ type: "unsupported" });
+    expect(mk({ contactsArrayMessage: { contacts: [{ vcard }] } })[0]).toMatchObject({ type: "contacts" });
+    expect(mk({ contactMessage: { displayName: "X", vcard: "BEGIN:VCARD\nFN:X\nEND:VCARD" } })[0]).toMatchObject({ type: "unsupported" });
+    expect(mk({ contactMessage: "lixo" })[0]).toMatchObject({ type: "unsupported" });
   });
 
   it("phoneCandidates: formatos do Brasil, com e sem o 9º dígito; lixo vira vazio", () => {

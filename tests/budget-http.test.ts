@@ -1,27 +1,20 @@
 import { describe, it, expect } from "vitest";
 import { MemoryRepo } from "../src/db/memory-repo";
 import { route, type AppDeps } from "../src/index";
-import { handleStatusEvent } from "../src/budget/status";
 import { sendGuarded } from "../src/whatsapp/client";
 import { createLogger, type Logger, type LogLevel } from "../src/lib/logger";
-import { signBody } from "../src/whatsapp/signature";
-import statusBillable from "./fixtures/status_billable.json";
-import statusFree from "./fixtures/status_free.json";
+import { PHONE, TOKEN as WEBHOOK_TOKEN, auth, text as upsertText, upsert } from "./helpers/evolution";
 
 const NOW = new Date("2026-11-10T15:00:00Z");
-const WA = "5511987651234";
-const SECRET = "appsecret";
 const TOKEN = "admintok";
 
 function setup() {
   const repo = new MemoryRepo();
+  repo.users.set(PHONE, new Date(NOW.getTime() - 60_000)); // a pessoa já escreveu ao bot
   const logs: { level: LogLevel; event: string }[] = [];
   const logger: Logger = { log: (level, event) => { logs.push({ level, event }); } };
   const deps: AppDeps = {
-    appSecret: SECRET, verifyToken: "v", repo, logger, now: () => NOW,
-    onEvent: async (ev) => {
-      if (ev.type === "status") await handleStatusEvent(ev, { repo, logger, phoneNumberId: "PNID", now: () => NOW });
-    },
+    webhookToken: WEBHOOK_TOKEN, repo, logger, now: () => NOW,
     admin: { adminToken: TOKEN, repo, logger, phoneNumberId: "PNID", stopAt: 950, timezone: "America/Sao_Paulo", now: () => NOW },
   };
   const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); } };
@@ -30,84 +23,54 @@ function setup() {
 }
 
 async function postWebhook(s: ReturnType<typeof setup>, payload: unknown): Promise<Response> {
-  const body = JSON.stringify(payload);
-  const sig = await signBody(body, SECRET);
   const r = await route(
-    new Request("https://x/webhook", { method: "POST", body, headers: { "X-Hub-Signature-256": sig } }),
+    new Request("https://x/webhook", { method: "POST", body: JSON.stringify(payload), headers: auth() }),
     s.ctx, s.deps,
   );
   await s.flush();
   return r;
 }
-function clone<T>(o: T): T { return JSON.parse(JSON.stringify(o)) as T; }
-function withPricing(base: unknown, id: string, pricing: unknown) {
-  const p = clone(base) as { entry: { changes: { value: { statuses: Record<string, unknown>[] } }[] }[] };
-  const st = p.entry[0]!.changes[0]!.value.statuses[0]!;
-  st.id = id;
-  st.pricing = pricing;
-  return p;
-}
 const sendCtx = (s: ReturnType<typeof setup>) => ({
-  repo: s.repo, logger: s.deps.logger, phoneNumberId: "PNID", whatsappToken: "t", graphApiVersion: "v21.0",
+  repo: s.repo, logger: s.deps.logger, phoneNumberId: "PNID", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst",
   stopAt: 950, timezone: "America/Sao_Paulo", now: () => NOW,
-  fetchImpl: (async () => new Response(JSON.stringify({ messages: [{ id: "w" }] }), { status: 200 })) as unknown as typeof fetch,
+  fetchImpl: (async () => new Response(JSON.stringify({ key: { id: "w" } }), { status: 201 })) as unknown as typeof fetch,
 });
-const msg = { to: WA, type: "text", text: { body: "oi" } };
+const msg = { to: PHONE, type: "text", text: { body: "oi" } };
 const admin = (path: string, init: RequestInit = {}, token: string | null = TOKEN) =>
   new Request("https://x" + path, {
     ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init.headers ?? {}) },
   });
 
-describe("status webhooks e trava manual", () => {
-  it("C2.5 billable:true liga a trava; envios seguintes bloqueados; só o admin destrava", async () => {
+describe("trava manual", () => {
+  it("C2.5 trava ligada bloqueia os envios; só o admin destrava (com confirmação)", async () => {
     const s = setup();
-    s.repo.users.set(WA, new Date(NOW.getTime() - 60_000));
     expect((await sendGuarded(msg, sendCtx(s))).status).toBe("sent");
-    await postWebhook(s, statusBillable);
-    expect((await s.repo.getManualLock("PNID")).locked).toBe(true);
-    expect(s.logs.some((l) => l.level === "critical")).toBe(true);
+    await s.repo.setManualLock("PNID", "humano");
     expect((await sendGuarded(msg, sendCtx(s))).status).toBe("blocked_manual_lock");
-    // um status "bom" depois não destrava
-    await postWebhook(s, statusFree);
-    expect((await s.repo.getManualLock("PNID")).locked).toBe(true);
     const r = await route(admin("/admin/budget/unlock?confirm=EU_ENTENDO_O_RISCO", { method: "POST" }), s.ctx, s.deps);
     expect(r.status).toBe(200);
     expect((await sendGuarded(msg, sendCtx(s))).status).toBe("sent");
   });
 
-  it("C2.5 type:'regular' sozinho liga a trava", async () => {
+  it("C2.5 status de entrega/preço da Evolution (messages.update) são ignorados: nada liga a trava", async () => {
     const s = setup();
-    await postWebhook(s, withPricing(statusFree, "wamid.A", { billable: false, pricing_model: "PMP", type: "regular", category: "service" }));
-    expect((await s.repo.getManualLock("PNID")).locked).toBe(true);
-  });
-
-  it("C2.5 category:'utility' sozinho liga a trava", async () => {
-    const s = setup();
-    await postWebhook(s, withPricing(statusFree, "wamid.B", { billable: false, pricing_model: "PMP", type: "free_customer_service", category: "utility" }));
-    expect((await s.repo.getManualLock("PNID")).locked).toBe(true);
-  });
-
-  it("C2.5 pricing gratuito normal NÃO liga a trava e é gravado no outbound_log", async () => {
-    const s = setup();
-    await s.repo.insertOutboundLog({ waIdHash: "h", messageType: "text", wamid: "wamid.OUT1", reservedAt: NOW, sentOk: true, errorCode: null });
-    await postWebhook(s, withPricing(statusFree, "wamid.OUT1", { billable: false, pricing_model: "PMP", type: "free_customer_service", category: "service" }));
+    const r = await postWebhook(s, { event: "messages.update", instance: "i", data: { status: "DELIVERY_ACK", pricing: { billable: true, type: "regular", category: "marketing" } } });
+    expect(r.status).toBe(200);
     expect((await s.repo.getManualLock("PNID")).locked).toBe(false);
-    expect(s.repo.outbound[0]).toMatchObject({ pricingBillable: false, pricingType: "free_customer_service", pricingCategory: "service" });
   });
 });
 
 describe("webhook com disjuntor aberto", () => {
-  it("C2.10 POST /webhook responde 200 com disjuntor (orçamento e trava manual) aberto", async () => {
+  it("C2.10 POST /webhook responde 200 com a trava manual e o teto diário abertos (só para de ENVIAR)", async () => {
     const s = setup();
     await s.repo.setManualLock("PNID", "x");
-    s.repo.budgets.set("PNID|2026-11", {
-      phoneNumberId: "PNID", monthKey: "2026-11", reservedCount: 950, stopAt: 950,
+    s.repo.budgets.set("PNID|2026-11-10", {
+      phoneNumberId: "PNID", monthKey: "2026-11-10", reservedCount: 950, stopAt: 950,
       tripped: true, tripReason: "x", trippedAt: NOW, warned: true, tripLogged: true,
     });
-    const text = clone(statusFree);
-    expect((await postWebhook(s, text)).status).toBe(200);
-    expect((await postWebhook(s, statusBillable)).status).toBe(200);
-    expect((await postWebhook(s, { object: "whatsapp_business_account", entry: [] })).status).toBe(200);
+    expect((await postWebhook(s, upsertText("oi"))).status).toBe(200);
+    expect((await postWebhook(s, upsert({ stickerMessage: {} }, { id: "S1" }))).status).toBe(200);
+    expect((await postWebhook(s, { event: "connection.update", data: {} })).status).toBe(200);
   });
 });
 
@@ -130,15 +93,14 @@ describe("endpoints admin", () => {
     expect((await s.repo.getManualLock("PNID")).locked).toBe(true);
   });
 
-  it("C2.11 GET /admin/budget mostra mês, contador, stop_at, tripped e trava", async () => {
+  it("C2.11 GET /admin/budget mostra o dia, contador, stop_at, tripped e trava", async () => {
     const s = setup();
-    s.repo.users.set(WA, new Date(NOW.getTime() - 60_000));
     await sendGuarded(msg, sendCtx(s));
     await s.repo.setManualLock("PNID", "motivo");
     const r = await route(admin("/admin/budget"), s.ctx, s.deps);
     expect(r.status).toBe(200);
     expect(await r.json()).toMatchObject({
-      month: "2026-11", reserved_count: 1, stop_at: 950, tripped: false,
+      period: "2026-11-10", flood_limit_enabled: true, reserved_count: 1, stop_at: 950, tripped: false,
       manual_lock: { locked: true, reason: "motivo" },
     });
   });
@@ -156,11 +118,10 @@ describe("endpoints admin", () => {
     expect(lock.unlockedAt).toBeInstanceOf(Date);
   });
 
-  it("C2.11 unlock não reabre o orçamento esgotado do mês", async () => {
+  it("C2.11 unlock não reabre o teto diário esgotado", async () => {
     const s = setup();
-    s.repo.users.set(WA, new Date(NOW.getTime() - 60_000));
-    s.repo.budgets.set("PNID|2026-11", {
-      phoneNumberId: "PNID", monthKey: "2026-11", reservedCount: 950, stopAt: 950,
+    s.repo.budgets.set("PNID|2026-11-10", {
+      phoneNumberId: "PNID", monthKey: "2026-11-10", reservedCount: 950, stopAt: 950,
       tripped: true, tripReason: "x", trippedAt: NOW, warned: true, tripLogged: true,
     });
     await s.repo.setManualLock("PNID", "x");

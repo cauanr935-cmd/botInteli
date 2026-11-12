@@ -6,6 +6,7 @@ import { intentsOf } from "../../../src/conversation/synonyms";
 import { sendGuarded } from "../../../src/whatsapp/client";
 import { processEvents } from "../../../src/webhook/handler";
 import type { IncomingMessage, WebhookEvent } from "../../../src/whatsapp/types";
+import { asTransport } from "../../helpers/transport";
 
 const NOW = new Date("2026-11-10T15:00:00Z");
 const WA = "5511987651234";
@@ -16,11 +17,11 @@ function setup(max10 = 4, maxDay = 12) {
   const repo = new MemoryRepo();
   const graph = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: `o${++n}` }] }), { status: 200 }));
   const send = (m: Parameters<typeof sendGuarded>[0]) =>
-    sendGuarded(m, { repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 950,
-      timezone: "America/Sao_Paulo", fetchImpl: graph as unknown as typeof fetch, now: () => NOW });
+    sendGuarded(m, { repo, logger, phoneNumberId: "PN", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst", stopAt: 950,
+      timezone: "America/Sao_Paulo", transport: asTransport(graph as never), now: () => NOW });
   const deps = { repo, logger, send, maxPerDay: maxDay, maxPer10Min: max10, now: () => NOW };
-  const feed = (ev: IncomingMessage) => processEvents([ev], { appSecret: "", verifyToken: "", repo, logger, now: () => NOW,
-    onEvent: async (e: WebhookEvent) => { if (e.type !== "status") await handleIncomingMessage(e, deps); } });
+  const feed = (ev: IncomingMessage) => processEvents([ev], { webhookToken: "", repo, logger, now: () => NOW,
+    onEvent: async (e: WebhookEvent) => { await handleIncomingMessage(e, deps); } });
   return { graph, feed, repo };
 }
 const fresh = (state: UserState["state"]): UserState => ({ state, previousState: null, hintSentInState: false, optedOutAt: null });

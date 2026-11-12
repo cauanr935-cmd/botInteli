@@ -7,6 +7,7 @@ import { sendGuarded } from "../src/whatsapp/client";
 import type { IncomingMessage } from "../src/whatsapp/types";
 import { SENSITIVE_MESSAGES } from "../src/axo/sensitive";
 import { isCourtesy } from "../src/profile/decide";
+import { asTransport } from "./helpers/transport";
 
 const NOW = new Date("2026-11-11T15:00:00Z");
 const WA = "5511987651234";
@@ -25,8 +26,8 @@ async function setup(state: string, extra: { optedOutAt?: Date } = {}) {
   const graph = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: `o${++seq}` }] }), { status: 200 }));
   const send = (m: Parameters<typeof sendGuarded>[0]) =>
     sendGuarded(m, {
-      repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 950,
-      timezone: "America/Sao_Paulo", fetchImpl: graph as unknown as typeof fetch, now: () => NOW,
+      repo, logger, phoneNumberId: "PN", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst", stopAt: 950,
+      timezone: "America/Sao_Paulo", transport: asTransport(graph as never), now: () => NOW,
     });
   const deps = { repo, logger, send, maxPerDay: 40, maxPer10Min: 15, now: () => NOW };
   const say = (body: string) => handleIncomingMessage(text(body), deps);

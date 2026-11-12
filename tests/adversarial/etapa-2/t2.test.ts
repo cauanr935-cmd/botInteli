@@ -5,16 +5,16 @@ import { processEvents } from "../../../src/webhook/handler";
 
 const logger = { log: () => undefined };
 function ctx(repo: MemoryRepo, f: typeof fetch) {
-  return { repo, logger, phoneNumberId: "PN", whatsappToken: "t", graphApiVersion: "v21.0", stopAt: 2, timezone: "America/Sao_Paulo", fetchImpl: f };
+  return { repo, logger, phoneNumberId: "PN", evolutionUrl: "https://evo.test", evolutionApiKey: "k", evolutionInstance: "inst", stopAt: 2, timezone: "America/Sao_Paulo", fetchImpl: f };
 }
-it("template disfarçado (caixa/espaço/campo template) nunca chega à Graph", async () => {
-  const repo = new MemoryRepo(); await repo.touchUser("55", new Date());
+it("tipos que o Baileys não entrega (template em qualquer grafia, mídia) nunca chegam à Evolution", async () => {
+  const repo = new MemoryRepo();
   let calls = 0; const f = (async () => { calls++; return new Response("{}"); }) as typeof fetch;
-  for (const m of [{ to: "55", type: " TEMPLATE " }, { to: "55", type: "text", template: { name: "x" } }])
-    expect((await sendGuarded(m as never, ctx(repo, f))).status).toBe("blocked_template");
+  for (const m of [{ to: "55", type: " TEMPLATE " }, { to: "55", type: "template", template: { name: "x" } }, { to: "55", type: "image" }])
+    expect(await sendGuarded(m as never, ctx(repo, f))).toEqual({ status: "error", code: "unsupported_type" });
   expect(calls).toBe(0);
 });
-it("falha da Graph não devolve vaga: 2 falhas esgotam stop_at=2", async () => {
+it("falha da Evolution não devolve vaga: 2 falhas esgotam o teto diário de 2", async () => {
   const repo = new MemoryRepo(); await repo.touchUser("55", new Date());
   let calls = 0; const f = (async () => { calls++; return new Response("x", { status: 500 }); }) as typeof fetch;
   const m = { to: "55", type: "text", text: { body: "a" } };
@@ -25,7 +25,7 @@ it("falha da Graph não devolve vaga: 2 falhas esgotam stop_at=2", async () => {
 it("mensagem duplicada que falha não é liberada (sem resposta dupla)", async () => {
   const repo = new MemoryRepo(); let n = 0;
   const ev = { type: "text", wamid: "w9", from: "55", timestamp: 1, text: "oi" } as never;
-  const deps = { appSecret: "s", verifyToken: "v", repo, logger, onEvent: async () => { n++; throw new Error("x"); } };
+  const deps = { webhookToken: "s", repo, logger, onEvent: async () => { n++; throw new Error("x"); } };
   await processEvents([ev], deps as never); await processEvents([ev], deps as never);
   expect(n).toBe(1);
 });

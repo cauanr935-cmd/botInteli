@@ -3,7 +3,7 @@ import { handleChat, toUi } from "../src/sim/chat";
 import { buildButtons, buildList, buildText } from "../src/whatsapp/builders";
 
 const ENV = {
-  WHATSAPP_TOKEN: "t", PHONE_NUMBER_ID: "1", APP_SECRET: "s", VERIFY_TOKEN: "v", GRAPH_API_VERSION: "v21.0",
+  EVOLUTION_URL: "https://evo.example.com", EVOLUTION_API_KEY: "k", EVOLUTION_INSTANCE: "inst", EVOLUTION_WEBHOOK_TOKEN: "token-webhook-123456",
   SUPABASE_URL: "https://x.invalid", SUPABASE_SERVICE_KEY: "k", ADMIN_TOKEN: "adm",
   PRIVACY_POLICY_URL: "https://e.com/p", TERMS_VERSION: "1",
 };

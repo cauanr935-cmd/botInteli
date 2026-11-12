@@ -4,21 +4,18 @@ import { maskPhone } from "../../../src/lib/logger";
 import worker from "../../../src/index";
 
 const base = {
-  WHATSAPP_TOKEN: "t", PHONE_NUMBER_ID: "1", APP_SECRET: "s", VERIFY_TOKEN: "v",
-  GRAPH_API_VERSION: "v21.0", SUPABASE_URL: "https://x", SUPABASE_SERVICE_KEY: "k",
+  EVOLUTION_URL: "https://evo.example.com", EVOLUTION_API_KEY: "k", EVOLUTION_INSTANCE: "inst",
+  EVOLUTION_WEBHOOK_TOKEN: "token-webhook-123456", SUPABASE_URL: "https://x", SUPABASE_SERVICE_KEY: "k",
   ANALYZER_API_URL: "https://a", ANALYZER_API_KEY: "k", ADMIN_TOKEN: "a",
   PRIVACY_POLICY_URL: "https://p", TERMS_VERSION: "1",
 };
 describe("adv etapa 0", () => {
-  it("margem absurda (>=1000) não produz STOP_AT <= 0", () => {
-    for (const m of ["1000", "5000"]) {
-      let stop: number | undefined;
-      try { stop = loadConfig({ ...base, BUDGET_SAFETY_MARGIN: m }).stopAt; } catch { stop = undefined; }
-      expect(stop === undefined || stop > 0).toBe(true);
-    }
+  it("teto anti-flood absurdo (> 990) é recusado; 0 desliga", () => {
+    for (const m of ["991", "1000", "5000"]) expect(() => loadConfig({ ...base, ANTI_FLOOD_MAX_PER_DAY: m })).toThrow(/ANTI_FLOOD_MAX_PER_DAY/);
+    expect(loadConfig({ ...base, ANTI_FLOOD_MAX_PER_DAY: "0" }).stopAt).toBe(0);
   });
   it("variáveis só com espaços são tratadas como ausentes; limites 0 recusados", () => {
-    expect(() => loadConfig({ ...base, APP_SECRET: "   " })).toThrow(/APP_SECRET/);
+    expect(() => loadConfig({ ...base, EVOLUTION_API_KEY: "   " })).toThrow(/EVOLUTION_API_KEY/);
     expect(() => loadConfig({ ...base, MAX_BOT_MSGS_PER_USER_PER_DAY: "0" })).toThrow();
   });
   it("máscara de telefone com formatos estranhos não vaza", () => {
