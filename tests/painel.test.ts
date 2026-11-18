@@ -111,7 +111,8 @@ describe("API de integração", () => {
     const j = (await list.json()) as { items: Record<string, unknown>[] };
     expect(j.items).toHaveLength(1);
     expect(j.items[0]).toMatchObject({ id: ID, subject: "Carreira", partner: "Ana", role: "mentor", analysis_pending: true, audio_url: `/api/v1/mentorias/${ID}/audio` });
-    expect(JSON.stringify(j)).not.toMatch(/h1|5511/);
+    expect(JSON.stringify(j)).not.toMatch(/5511/); // nunca o telefone
+    expect(j.items[0]).toMatchObject({ registrante: { pessoa_id: "h1", papel: "mentor" }, parceiro: { pessoa_id: null, confirmado_em: null } }); // só o pessoa_id (HMAC)
     const audio = await handleApi(new Request(`https://w.dev/api/v1/mentorias/${ID}/audio`, { headers: h }), d);
     expect(audio.status).toBe(200);
     expect(audio.headers.get("Content-Type")).toBe("audio/ogg");

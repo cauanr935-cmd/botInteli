@@ -217,8 +217,10 @@ export async function resetTestUser(
     const r = await rest(path, { method: "DELETE" });
     if (!r.ok) return { ok: false, error: `banco: ${r.status}` };
   }
-  const listed = await bucket.list({ prefix: `audios/${hash}/` });
-  if (listed.objects.length > 0) await bucket.delete(listed.objects.map((o) => o.key));
+  for (const folder of ["informacoes", "mentorias"]) {
+    const listed = await bucket.list({ prefix: `audios/${folder}/${hash}/` });
+    if (listed.objects.length > 0) await bucket.delete(listed.objects.map((o) => o.key));
+  }
   const materials = await bucket.list({ prefix: `materiais/${hash}/` });
   if (materials.objects.length > 0) await bucket.delete(materials.objects.map((o) => o.key));
   return { ok: true };

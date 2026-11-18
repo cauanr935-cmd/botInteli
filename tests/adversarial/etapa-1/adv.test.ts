@@ -35,7 +35,7 @@ it("100 entregas simultâneas do mesmo payload processam 1x e sem vazar texto/te
   const b = body("3EB0A");
   const rs = await Promise.all(Array.from({ length: 100 }, () => post(m, b)));
   expect(rs.every((r) => r.status === 200)).toBe(true);
-  expect(m.seen).toEqual(["text", "unsupported"]);
+  expect([...m.seen].sort()).toEqual(["text", "unsupported"]); // cada evento 1x; a ordem entre eles depende da concorrência
   const all = m.lines.join("\n");
   expect(all).not.toContain("segredo-xyz");
   expect(all).not.toContain(PHONE);

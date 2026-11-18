@@ -1,3 +1,4 @@
+import { configurePessoaIdSecret } from "./lib/hash";
 import { handleAdmin, type AdminDeps } from "./admin/budget";
 import { loadConfig } from "./config";
 import { createMediaClient } from "./whatsapp/evolutionClient";
@@ -93,6 +94,7 @@ function buildDeps(env: Env, logger: Logger): AppDeps | null {
 
 export default {
   async fetch(request: Request, env: Env = {}, ctx?: ExecutionContext): Promise<Response> {
+    configurePessoaIdSecret(env.PESSOA_ID_SECRET);
     const logger = createLogger();
     const pathname = new URL(request.url).pathname;
     // Painel de metadados (login) e API de integração do analisador. Independentes das credenciais da Evolution.
@@ -103,7 +105,7 @@ export default {
       const repo = new SupabaseRepo(url, key);
       if (pathname.startsWith("/api/v1/")) {
         const apiKey = typeof env.INTEGRATION_API_KEY === "string" ? env.INTEGRATION_API_KEY.trim() : "";
-        return handleApi(request, { apiKey, repo, bucket: env.AUDIOS });
+        return handleApi(request, { apiKey, repo, bucket: env.AUDIOS, people: repo });
       }
       return handlePanel(request, { env, repo, bucket: env.AUDIOS });
     }
@@ -119,6 +121,7 @@ export default {
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     // Cron diário (C7.1): consulta leve, limpeza de idempotência, destrava de áudio e uso do mês.
+    configurePessoaIdSecret(env.PESSOA_ID_SECRET);
     const logger = createLogger();
     try {
       const cfg = loadConfig(env);

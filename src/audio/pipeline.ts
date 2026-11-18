@@ -167,7 +167,8 @@ async function run(msg: AudioEvent, content: Content, deps: AudioPipelineDeps, p
   const mime = canonicalAudioMime(mimeRaw) ?? "audio/mpeg"; // já validado acima: nunca cai no padrão
   const waIdHash = await hashWaId(msg.from);
   const id = (deps.uuid ?? (() => crypto.randomUUID()))();
-  const key = audioKey(waIdHash, clock(), deps.timezone, id, mime);
+  // Áudio de perfil (informações pessoais) e áudio de mentoria vão para pastas diferentes do bucket.
+  const key = audioKey(waIdHash, clock(), deps.timezone, id, mime, purpose === "profile" ? "informacoes" : "mentorias");
   await deps.store.put(key, dl.bytes, mime);
   // Mentoria: só o arquivo por enquanto (assunto, data e parceiro vêm da conversa; a mentoria só fica completa depois).
   const serviceId = purpose === "profile" ? "perfil" : "mentoria";

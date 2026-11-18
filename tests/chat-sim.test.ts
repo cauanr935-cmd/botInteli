@@ -52,7 +52,7 @@ describe("reinício do usuário de teste", () => {
     expect(await resetTestUser("first_contact", "https://x.invalid", "k", m.bucket, m.f)).toEqual({ ok: true });
     expect(m.calls.map((c) => c.split("?")[0])).toEqual(["DELETE audios", "DELETE doubts", "DELETE doubt_materials", "DELETE outbound_log", "DELETE users"]);
     expect(m.calls[4]).toContain(CHAT_PHONE);
-    expect(m.deleted).toEqual([["audios/h/a.ogg"], ["audios/h/a.ogg"]]); // áudios e materiais (o mock lista o mesmo arquivo nos dois prefixos)
+    expect(m.deleted).toEqual([["audios/h/a.ogg"], ["audios/h/a.ogg"], ["audios/h/a.ogg"]]); // áudios de informações, de mentorias e materiais (o mock lista o mesmo arquivo em todos os prefixos)
   });
 
   it("já cadastrado: limpa envios e volta ao menu, mantendo o cadastro", async () => {

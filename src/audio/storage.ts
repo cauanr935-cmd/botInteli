@@ -89,7 +89,10 @@ export function resolveAudioMime(declared: string | undefined, filename?: string
   return generic ? audioMimeFromFilename(filename) : null;
 }
 
-/** audios/<hash do telefone>/<YYYY-MM>/<uuid>.<ext>: nunca o telefone em claro (R3/R6). */
-export function audioKey(waIdHash: string, at: Date, timezone: string, id: string, mime: string): string {
-  return `audios/${waIdHash}/${monthKey(at, timezone)}/${id}.${EXT[canonicalAudioMime(mime) ?? baseMime(mime)] ?? "bin"}`;
+/** Pastas do bucket: "informacoes" = áudios de perfil (gostos, time, nascimento...); "mentorias" = só mentorias registradas. */
+export type AudioFolder = "informacoes" | "mentorias";
+
+/** audios/<pasta>/<hash do telefone>/<YYYY-MM>/<uuid>.<ext>: nunca o telefone em claro (R3/R6). */
+export function audioKey(waIdHash: string, at: Date, timezone: string, id: string, mime: string, folder: AudioFolder = "mentorias"): string {
+  return `audios/${folder}/${waIdHash}/${monthKey(at, timezone)}/${id}.${EXT[canonicalAudioMime(mime) ?? baseMime(mime)] ?? "bin"}`;
 }

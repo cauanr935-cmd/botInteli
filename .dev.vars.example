@@ -21,6 +21,9 @@ PRIVACY_POLICY_URL=https://bot-whatsapp.bot-whatsaap-inteli.workers.dev/privacid
 TERMS_VERSION=2025-01
 MAX_AUDIO_BYTES=16000000
 ANALYZER_TIMEOUT_MS=8000
+# Segredo do HMAC que gera o pessoa_id (telefone -> id). Mínimo 32 caracteres. Gere com: openssl rand -hex 32
+# Perder este valor quebra todas as ligações do banco e do R2: guarde um backup. Em produção: wrangler secret put PESSOA_ID_SECRET
+PESSOA_ID_SECRET=exemplo-ficticio-troque-por-openssl-rand-hex-32
 
 # IA: opcional. Sem chave o bot funciona só com as regras do código. Chave gsk_... = Groq; xai-... = xAI Grok.
 # (nomes antigos XAI_API_KEY / XAI_MODEL / XAI_BASE_URL também funcionam)

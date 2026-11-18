@@ -164,13 +164,13 @@ describe("C6.1 URL da mídia expira em 5 minutos", () => {
 });
 
 describe("C6.2 armazenamento", () => {
-  it("C6.2 salva no R2 (mock) com chave audios/<hash>/<YYYY-MM>/<uuid>.<ext> sem o telefone", async () => {
+  it("C6.2 salva no R2 (mock) com chave audios/mentorias/<hash>/<YYYY-MM>/<uuid>.<ext> sem o telefone", async () => {
     const s = setup();
     await s.ready();
     await s.feed(audio());
     expect(s.store.objects.size).toBe(1);
     const key = [...s.store.objects.keys()][0]!;
-    expect(key).toMatch(/^audios\/[0-9a-f]{64}\/2026-11\/[0-9a-f-]+\.ogg$/);
+    expect(key).toMatch(/^audios\/mentorias\/[0-9a-f]{64}\/2026-11\/[0-9a-f-]+\.ogg$/);
     expect(key).not.toContain(WA);
     expect(key).toContain(await s.hash);
     const row = [...s.repo.audios.values()][0]!;
@@ -427,7 +427,8 @@ describe("arquivos de áudio gravados antes (qualquer formato comum)", () => {
     expect(resolveAudioMime("application/octet-stream", "gravacao.mp3")).toBe("audio/mpeg");
     expect(resolveAudioMime("application/pdf", "gravacao.mp3")).toBeNull();
     expect(resolveAudioMime(undefined, "semextensao")).toBeNull();
-    expect(audioKey("h", new Date("2026-11-10T15:00:00Z"), "America/Sao_Paulo", "id1", "audio/x-m4a")).toBe("audios/h/2026-11/id1.m4a");
+    expect(audioKey("h", new Date("2026-11-10T15:00:00Z"), "America/Sao_Paulo", "id1", "audio/x-m4a")).toBe("audios/mentorias/h/2026-11/id1.m4a");
+    expect(audioKey("h", new Date("2026-11-10T15:00:00Z"), "America/Sao_Paulo", "id1", "audio/ogg", "informacoes")).toBe("audios/informacoes/h/2026-11/id1.ogg");
   });
 
   it("webhook: arquivo de áudio anexado como 'Documento' vira áudio; PDF continua documento", async () => {
