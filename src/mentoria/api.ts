@@ -3,7 +3,7 @@
 //   GET  /api/v1/mentorias?status=pending&limit=50   lista (pendentes = sem resultado de análise)
 //   GET  /api/v1/mentorias/<id>                      uma mentoria
 //   GET  /api/v1/mentorias/<id>/audio                bytes do áudio (Content-Type = tipo do áudio)
-//   POST /api/v1/mentorias/<id>/result               {"result": <qualquer JSON>}  grava o resultado
+//   POST /api/v1/mentorias/<id>/result               {"result": <qualquer JSON>}  grava o resultado (reenviável; result.curadoria avisa os participantes)
 import type { MentoriaRepo, MentoriaRow, PersonRef } from "../db/repo";
 import { constantTimeEqual } from "./auth";
 
@@ -13,6 +13,10 @@ export interface ApiDeps {
   bucket: R2Bucket | undefined;
   /** Cadastro (nome, consentimento) de quem registrou e do parceiro, por pessoa_id. Sem isto, esses campos vão null. */
   people?: { findPersonByWaIdHash(hash: string): Promise<PersonRef | null> };
+  /** Avisa os participantes quando a curadoria muda (src/mentoria/curadoria.ts). Sem isto, só grava o resultado. */
+  notify?: (mentoriaId: string, result: unknown) => Promise<unknown>;
+  /** Roda o aviso depois da resposta (ctx.waitUntil do Worker). Sem isto, o aviso é aguardado antes de responder. */
+  waitUntil?: (p: Promise<unknown>) => void;
   now?: () => Date;
 }
 
@@ -118,7 +122,13 @@ export async function handleApi(request: Request, deps: ApiDeps): Promise<Respon
           return json({ error: "campo 'result' obrigatório" }, 400);
         }
         const ok = await deps.repo.setAnalysisResult(id, body.result, now);
-        return ok ? json({ ok: true }) : json({ error: "not found" }, 404);
+        if (!ok) return json({ error: "not found" }, 404);
+        if (deps.notify) {
+          // O resultado já está salvo: falha no aviso nunca vira erro para o notebook (ele reenvia e o aviso tenta de novo).
+          const job = deps.notify(id, body.result).catch(() => undefined);
+          if (deps.waitUntil) deps.waitUntil(job); else await job;
+        }
+        return json({ ok: true });
       }
     }
     return json({ error: "not found" }, 404);

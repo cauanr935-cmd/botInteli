@@ -135,3 +135,33 @@ describe("endpoints admin", () => {
     void createLogger;
   });
 });
+
+describe("POST /admin/reprocess-audio", () => {
+  const body = { phone: PHONE, mediaUrl: "https://midia.example/a", mimeType: "audio/mp4", messageId: "ABC123", fileSize: 64_000_000 };
+  const post = (s: ReturnType<typeof setup>, b: unknown, token: string | null = TOKEN) =>
+    route(admin("/admin/reprocess-audio", { method: "POST", body: JSON.stringify(b) }, token), s.ctx, s.deps);
+
+  it("exige o token admin", async () => {
+    const s = setup();
+    expect((await post(s, body, null)).status).toBe(401);
+  });
+  it("sem R2/MEDIA_URL_HOSTS configurados: 501", async () => {
+    const s = setup();
+    expect((await post(s, body)).status).toBe(501);
+  });
+  it("campos faltando: 400; sucesso: 200 com o resultado", async () => {
+    const s = setup();
+    const calls: unknown[] = [];
+    s.deps.admin!.reprocessAudio = async (r) => { calls.push(r); return "done"; };
+    expect((await post(s, { phone: PHONE })).status).toBe(400);
+    const ok = await post(s, body);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ outcome: "done" });
+    expect(calls).toHaveLength(1);
+  });
+  it("falha no processamento: 422 (nada é enviado pelo endpoint)", async () => {
+    const s = setup();
+    s.deps.admin!.reprocessAudio = async () => "failed";
+    expect((await post(s, body)).status).toBe(422);
+  });
+});

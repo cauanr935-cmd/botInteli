@@ -56,6 +56,16 @@ describe("fim do fluxo: o bot volta a falar de mentoria", () => {
     expect(t.repo.doubts).toHaveLength(1);
     expect(t.repo.doubts[0]!.text).toMatch(/cálculo/);
     expect(t.repo.doubts[0]!.categories).toEqual(["matematica"]);
+    // Matching manual: a dúvida nasce 'aberta', com o telefone de quem perguntou, e aparece para o admin.
+    expect(t.repo.doubts[0]).toMatchObject({ status: "aberta", waId: WA });
+    expect((await t.repo.listOpenDoubts(10)).map((d) => d.waId)).toEqual([WA]);
+  });
+
+  it("só a dúvida é guardada: conversa solta não cria registro", async () => {
+    const t = await setup("COMPLETED");
+    await t.say("oi");
+    await t.say("obrigado");
+    expect(t.repo.doubts).toHaveLength(0);
   });
 
   it("o mesmo pedido funciona em RETURNING_CHOICE", async () => {
@@ -109,7 +119,7 @@ describe("temas sensíveis no engine", () => {
     expect(logs.join("\n")).toMatch(/sensitive_topic/);
   });
 
-  it("modo cuidado: nas 24 h seguintes cada resposta fecha com o CVV", async () => {
+  it("modo cuidado: na 1 h seguinte cada resposta fecha com o CVV", async () => {
     const t = await setup("COMPLETED");
     await t.say("quero morrer");
     await t.say("oi");

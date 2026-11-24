@@ -1,6 +1,7 @@
 # Bot WhatsApp + Chat Web — documentação técnica
 
-> Estado em 2026-11-12 (canal WhatsApp migrado da Cloud API da Meta para a Evolution API/Baileys). Este documento descreve o sistema como está implementado no código, não como foi planejado.
+> Atualizado em 2026-11-23. O canal WhatsApp usa a Evolution API/Baileys (migrado da Cloud API da Meta em 2026-11-12) e o bot hoje é o **Axo**, assistente da rede de mentoria **Be My Mentor** (cadastro, perfil, dúvidas, match mentor↔mentorado, registro e validação de mentorias, certificado). Este documento descreve o sistema como está implementado no código, não como foi planejado.
+> **Para entender a lógica de ponta a ponta (e montar o vídeo/animação), vá direto às seções 17 (árvore de decisão), 18 (roteiro de animação) e 19 (glossário de estados).**
 > Regras de projeto e decisões: `CLAUDE.md`, `docs/PLANO.md`, `docs/DECISOES.md`.
 
 ## 1. Visão geral
@@ -8,9 +9,11 @@
 Um bot de atendimento que:
 
 1. Faz o **cadastro** da pessoa, com consentimento LGPD, e grava no banco.
-2. Mostra um **menu de serviços** (lista interativa).
-3. Responde com **respostas prontas** guardadas no banco.
-4. Recebe **áudios**, guarda no R2 e os encaminha a uma **API externa de análise**. O bot não analisa nada: só encaminha e devolve o resultado.
+2. Pergunta o **papel** (mentor, mentorado ou os dois), as **áreas** em que o mentor topa ajudar, a **dúvida** do mentorado e os **dias e horários** livres.
+3. Mostra um **menu de serviços** (lista interativa) e responde com **respostas prontas** guardadas no banco.
+4. **Conecta** mentor e mentorado (a equipe cria o match; o bot negocia horário e local com os dois, mantendo-os anônimos até 5 min antes).
+5. Recebe o **áudio da mentoria**, guarda no R2 e o encaminha ao analisador/curadoria. O bot não analisa nada: só encaminha e devolve o resultado (aprovada ou recusada).
+6. Atende pedidos de **certificado** e responde dúvidas sobre o programa e a LGPD (FAQ), com uma IA que só **escolhe uma opção** ou reescreve falas curtas, nunca decide sozinha.
 
 O bot tem **dois canais de entrada** que usam o **mesmo motor de conversa**, sem nenhuma regra duplicada:
 
@@ -44,7 +47,7 @@ A única diferença entre os canais está nas bordas: de onde vem o evento e par
 |---|---|
 | Linguagem | TypeScript (strict), ESM |
 | Runtime | Cloudflare Workers (`compatibility_date 2025-01-01`, `nodejs_compat`) |
-| Agendador | Cron Trigger do Workers (`0 6 * * *`, 06:00 UTC) |
+| Agendador | Cron Triggers do Workers: `0 6 * * *` (limpeza diária, não envia) e `* * * * *` (nomes 5 min antes das mentorias, `src/matching/reminder.ts`) |
 | Armazenamento de arquivos | Cloudflare R2, bucket `bot-whatsapp-audios` (binding `AUDIOS`) |
 | Banco | Supabase (Postgres) via REST (PostgREST), sem biblioteca cliente |
 | Mensageria | **Evolution API v2 (integração Baileys / WhatsApp Web)**, em Docker numa VM Oracle Cloud; o Worker só fala HTTP com ela (`src/whatsapp/evolutionClient.ts`) |
@@ -104,18 +107,21 @@ scripts/simulate.ts        Simulador sem rede (400 pessoas, repetição, limites
 | `MENU` | Menu de serviços | Escolhe um serviço da lista |
 | `AWAIT_AUDIO` | Serviço que exige áudio | Envia áudio → `PROCESSING_AUDIO` |
 | `PROCESSING_AUDIO` | Analisando | Pipeline termina → `AWAIT_AUDIO` |
-| `COMPLETED` | Fluxo concluído | "menu" → `MENU` |
+| `COMPLETED` | Fluxo concluído | "menu" → `MENU`; "oi" → `RETURNING_CHOICE` |
 | `OPTED_OUT` | Pediu para sair | "voltar" retoma de onde parou |
+
+Há muitos outros estados (perfil, horários, match, registro de mentoria, retirada de área). Todos estão listados com o significado na **seção 19**.
 
 Comandos reconhecidos em texto (com variações de maiúscula, acento, letras repetidas e pontuação): saudação (`oi`), `menu`/`voltar`/`início`, `sair`/`parar`/`cancelar`/`stop`, `sim`/`aceito`, `não`.
 
 ### 4.2 Regras anti-spam (R2)
 
-- Só responde a entrada **esperada no estado atual**. Entrada inesperada gera **no máximo 1 dica por estado**; depois, silêncio.
+- Só responde a entrada **esperada no estado atual**. Entrada inesperada gera **no máximo 1 dica por estado**; depois o Axo manda avisos curtos e descontraídos de "fora de assunto", e a **última vaga é sempre a despedida**; só então o silêncio (sem surpresa).
 - Repetição não gera resposta ("oi" depois das boas-vindas = silêncio).
 - Uma entrada válida = **no máximo uma resposta**. Nada de "aguarde" ou "recebi seu áudio" como mensagem separada.
-- Limites por pessoa: `MAX_BOT_MSGS_PER_USER_PER_DAY` (12) e `MAX_BOT_MSGS_PER_USER_PER_10MIN` (4). Acima disso, silêncio.
-- Figurinha, reação, imagem, vídeo, localização e contato são silêncio.
+- Limites por pessoa: `MAX_BOT_MSGS_PER_USER_PER_DAY` (padrão 200) e `MAX_BOT_MSGS_PER_USER_PER_10MIN` (padrão 30). Acima disso, silêncio.
+- Saudação ("oi", "tá por aí?") nunca fica sem retorno: o bot confirma que está vivo e repete a pergunta da etapa.
+- Reação, vídeo, localização e contato são silêncio. Figurinhas têm regras próprias (abertura, resenha, despedida, reação).
 
 ### 4.3 Cadastro
 
@@ -319,7 +325,7 @@ Variáveis obrigatórias (o Worker recusa processar `/webhook` e `/admin` se fal
 | `PRIVACY_POLICY_URL` | secret | Citada no termo de consentimento |
 | `TERMS_VERSION` | `[vars]` | Versão do termo |
 
-Opcionais: `ANALYZER_API_URL` + `ANALYZER_API_KEY` (devem ser configuradas juntas), `EVOLUTION_NATIVE_INTERACTIVE` (`false`), `ANTI_FLOOD_MAX_PER_DAY` (0 = desligado, máx. 990), `TIMEZONE` (`America/Sao_Paulo`; `META_ACCOUNT_TIMEZONE` ainda vale como alias), `MAX_BOT_MSGS_PER_USER_PER_DAY` (12), `MAX_BOT_MSGS_PER_USER_PER_10MIN` (4), `MAX_AUDIO_BYTES` (16000000), `ANALYZER_TIMEOUT_MS` (8000), `CHAT_SIM_ENABLED`.
+Opcionais: `ANALYZER_API_URL` + `ANALYZER_API_KEY` (devem ser configuradas juntas), `EVOLUTION_NATIVE_INTERACTIVE` (`false`), `ANTI_FLOOD_MAX_PER_DAY` (0 = desligado, máx. 990), `TIMEZONE` (`America/Sao_Paulo`; `META_ACCOUNT_TIMEZONE` ainda vale como alias), `MAX_BOT_MSGS_PER_USER_PER_DAY` (200), `MAX_BOT_MSGS_PER_USER_PER_10MIN` (30), `MAX_AUDIO_BYTES` (16000000), `ANALYZER_TIMEOUT_MS` (8000), `CHAT_SIM_ENABLED`.
 
 **Obsoletas (não são mais lidas nem exigidas):** `WHATSAPP_TOKEN`, `PHONE_NUMBER_ID`, `APP_SECRET`, `VERIFY_TOKEN`, `GRAPH_API_VERSION`, `BUDGET_SAFETY_MARGIN`, `WHATSAPP_FLOW_ID`.
 
@@ -384,3 +390,229 @@ O teste de higiene (`tests/repo-hygiene.test.ts`, C0.6) só exige que `.dev.vars
 | `/chat` devolve 404 | `CHAT_SIM_ENABLED` não é `"true"` | Ajuste em `wrangler.toml` e faça deploy |
 | `/chat` devolve 401 | Chave ausente ou diferente do `ADMIN_TOKEN` | Use `?key=<ADMIN_TOKEN>` |
 | Chat responde "áudio inválido" | Navegador gravou `webm` | Use Firefox/`ogg` ou anexe um arquivo `mp3`/`ogg` |
+
+## 16. Matching: mentor, mentorado e registro da mentoria (v2)
+
+1. **Aceite:** o admin cria o match (`/match D12 M3` ou painel); o mentor recebe a dúvida e responde *sim/não* (`MATCH_MENTOR_ACCEPT`). Não = match cancelado e a dúvida volta para a lista.
+2. **Horários:** mentor informa dias e horários livres (guardados no match). O mentorado escolhe uma faixa e diz de que horas a que horas vai a mentoria (média 1 h, **mínimo 20 min**, dentro da faixa), depois o local. A faixa livre (ex.: 8h–20h) é só disponibilidade.
+3. **Anonimato:** mentor e mentorado não sabem quem é o outro. Qualquer pergunta sobre nome/contato/inicial recebe texto fixo. O **nome chega 5 minutos antes** da mentoria (cron por minuto).
+4. **Registro:** quem tem mentoria confirmada manda só o áudio; papel, parceiro, assunto e data vêm do match (não pergunta contato nem assunto). Áudio **antes** do horário: o bot pergunta se já fizeram (sim = registra, não = ignora e apaga).
+5. **Certificado:** "quero meu certificado" grava um pedido (`certificado_pedidos`) se há mentoria aprovada e avisa a equipe; quem emite é o sistema da equipe.
+6. **Critérios da sessão:** a mensagem "Mentoria confirmada!" (a mesma que traz data, horário e local) já inclui, para o mentor e para o mentorado, os critérios para a sessão valer como Atividade Complementar (cadastro completo, gravação inteira sem cortes, os dois falando, mínimo de 20 min, orientação com objetivo e sem palestra/papo/estágio/TCC, sem ofensa nem fraude), com uma linha específica de cada papel. Código: `criteriaText` em `src/matching/decide.ts`.
+7. **Retirar área:** quem já é cadastrado e escreve algo como "quero retirar uma matéria" abre a lista das próprias áreas e escolhe qual sai (ou já diz o nome e sai direto). Não existe botão no menu para isso; a última área não pode ser retirada. Estado `REMOVE_CATEGORIES`, código em `src/profile/decide.ts`.
+
+## 17. Árvore de decisão (como o bot "pensa")
+
+### 17.1 O funil de toda mensagem (de cima para baixo; o primeiro que "pega" responde)
+
+```
+Chegou uma mensagem
+ │
+ ├─ 1. Token do webhook inválido? ───────────────► 401, nada é processado
+ ├─ 2. Mensagem já vista (mesmo key.id)? ────────► ignora (idempotência)
+ ├─ 3. É do próprio bot, de grupo ou status? ────► ignora
+ ├─ 4. Pessoa estava com a trava manual / sem contato prévio? ► não envia (R1)
+ │
+ ├─ 5. Disse "sair/parar"? ──────────────────────► OPTED_OUT (só "voltar" reativa)
+ ├─ 6. Tocou em Sim/Não de confirmação de mentoria ou [Pedir revisão]? ► trata e termina
+ ├─ 7. Tem confirmação de mentoria pendente? ────► pergunta ao parceiro
+ ├─ 8. Pergunta "quem é meu mentor?" ────────────► texto FIXO de anonimato (sem IA)
+ ├─ 9. Pede certificado (e já aceitou os termos)? ► confere e avisa a equipe
+ ├─10. Pergunta sobre o programa / termos / LGPD? ► responde 1 vez e repete a pergunta da etapa
+ │      assunto sem relação? ─────────────────────► "fora de assunto" (ver 17.8)
+ │
+ └─11. Máquina de estados (a pessoa está em ONDE da jornada?)
+        cadastro → perfil → horários → menu → match → mentoria → ...
+        Entrada esperada → avança e responde (no máximo 1 mensagem)
+        Entrada inesperada → 1 dica por estado, depois "fora de assunto", depois silêncio
+```
+
+Antes de qualquer envio, `sendGuarded` ainda confere: trava manual, **só escreve a quem já escreveu**, limites por pessoa (200/dia, 30/10 min) e anti-flood diário. Falhou qualquer um = não envia.
+
+### 17.2 Jornada completa (visão de cima)
+
+```
+oi ─► CADASTRO ─► PERFIL ─► (mentor) HORÁRIOS ─► COMPLETED ─► MENU
+                    │                                          │
+                    ├─ mentorado: DÚVIDA ─► HORÁRIOS ─► COMPLETED
+                    │
+   equipe cria MATCH (mentor ↔ dúvida) ─► mentor ACEITA ─► mentor manda HORÁRIOS
+        ─► mentorado ESCOLHE horário, duração e LOCAL ─► "Mentoria confirmada! + critérios"
+        ─► 5 min antes: chegam os NOMES ─► a mentoria acontece (gravada)
+        ─► áudio enviado ─► REGISTRO ─► parceiro CONFIRMA ─► curadoria
+        ─► "aprovada" ou "recusada" (com [Pedir revisão]) ─► CERTIFICADO
+```
+
+### 17.3 Cadastro (estados NEW → REG_*)
+
+| Passo | O bot pergunta | Resposta esperada | Se não entender |
+|---|---|---|---|
+| `NEW` | (pessoa escreve "oi") | saudação | 1 dica |
+| `REG_CONSENT` | Termos + LGPD, botão **Aceito** | "1", "aceito", "sim" | 1 dica; **nada é guardado sem aceite** |
+| `REG_FIELD_full_name` | Nome completo | nome real (a IA ajuda a desconfiar de apelidos) | dica; nome estranho/uma palavra → `REG_NAME_CONFIRM` ("é esse mesmo?") |
+| `REG_FIELD_class_name` | Turma (T27, T26...) | texto com número | dica |
+| `REG_AGE` | Idade/nascimento | número ou data válida (limite de idade) | dica |
+| `REG_PROFILE_AUDIO` | Um áudio contando curiosidades (ou texto de 10 a 1000 caracteres) | áudio ou texto | dica |
+| Quem **já é cadastrado** e escreve "oi" | vai direto a `RETURNING_CHOICE` | | |
+
+### 17.4 Perfil: papel, áreas, dúvida e horários
+
+```
+PROFILE_ROLE  "mentor, mentorado ou os dois?"  (1, 2, 3 ou botão)
+   │
+   ├─ Mentorado ─► DOUBT_ASK "tem uma dúvida agora?"
+   │                  ├─ Não ─► COMPLETED ("Parabéns, cadastro finalizado")
+   │                  └─ Sim ─► DOUBT_TEXT "descreva a dúvida" (pode anexar documento)
+   │                              ─► SCHED_* "dias e horários" ─► COMPLETED
+   │
+   ├─ Mentor ─► MENTOR_CATEGORIES  lista de áreas (Computação, Matemática, Liderança,
+   │             Negócios, Design/UX, Vida Acadêmica); uma por toque ou várias de uma vez
+   │             ─► "Concluir" ─► SCHED_* (dias e horários) ─► COMPLETED
+   │
+   └─ Os dois ─► MENTOR_CATEGORIES_BOTH ─► horários ─► DOUBT_ASK ─► ... ─► COMPLETED
+```
+
+- **Horários** (`SCHED_DAYS_*` / `SCHED_HOURS_*`): lista de dias → lista de faixas do dia → "Concluir" → volta aos dias → "Terminei". Também aceita texto livre ("segunda e quarta de manhã"): as regras leem primeiro e a IA só entra se as regras não acharem nada.
+- **Quem volta depois** (`RETURNING_CHOICE`): três opções, **Tirar dúvida**, **Mudar áreas**, **Menu**.
+- **Retirar uma área** (`REMOVE_CATEGORIES`): só começa se a pessoa **escrever** algo como "quero retirar uma matéria". Não existe botão. Lista as áreas atuais, a pessoa escolhe e o bot confirma em 1 mensagem. A última área não sai.
+- **Correção da dúvida:** "na verdade minha dúvida é..." troca a dúvida registrada enquanto estiver aberta; "tava brincando" é aceito.
+
+### 17.5 Menu de serviços (estado `MENU`)
+
+| Item | O que acontece |
+|---|---|
+| **Registrar mentoria** | exige áudio → `AWAIT_AUDIO` (ver 17.7) |
+| **Marcar nova mentoria** | abre o registro de dúvida (`DOUBT_TEXT`) |
+| **Horários** | a pessoa atualiza os dias e horários livres |
+| **Contato** | resposta pronta com o contato do fundador |
+
+Os itens e respostas vêm do banco (tabelas `services` e `canned_responses`) com fallback no código. Escolher o mesmo item de novo = silêncio.
+
+### 17.6 O match (mentor ↔ mentorado)
+
+```
+Equipe cria o match (/match D12 M3 ou painel)
+ └─► MATCH_MENTOR_ACCEPT  mentor vê a dúvida: "Você aceita?"
+        ├─ Não ─► match cancelado; a dúvida volta para a lista
+        └─ Sim ─► mentor informa dias/horários livres (SCHED_* do match)
+                  └─► MATCH_MENTEE_PICK  mentorado recebe a lista de horários
+                         ├─ "Nenhum desses" ─► mentor é chamado de novo para outra grade
+                         └─ escolhe ─► MATCH_MENTEE_TIME "de que horas a que horas?"
+                               (mínimo 20 min, dentro da faixa livre do mentor)
+                               └─► MATCH_MENTEE_PLACE "onde?" (texto livre)
+                                     └─► "Mentoria confirmada! 🎉" para os DOIS,
+                                         com a lista de CRITÉRIOS da sessão
+```
+
+- **Anonimato:** nenhum dos dois sabe quem é o outro. Qualquer pergunta sobre nome/contato recebe um texto fixo. O cron de 1 minuto manda os **nomes 5 minutos antes** do horário.
+- **Match cancelado** pela equipe: os dois são soltos e recebem um aviso curto.
+
+### 17.7 Registro e validação da mentoria
+
+```
+Menu "Registrar mentoria" (ou o áudio direto, se há mentoria confirmada)
+ └─► AWAIT_AUDIO  "envie o áudio"
+       └─► áudio recebido ─► consentimento ok? ─► tipo válido? ─► guarda no R2 ─► registra
+             │
+             ├─ Mentoria veio de um match: papel, parceiro, assunto e data já são conhecidos
+             │     ├─ áudio chegou ANTES do horário ─► MENT_EARLY_CONFIRM "já fizeram?"
+             │     │        Sim = segue; Não = ignora e apaga o áudio
+             │     └─► "Mentoria registrada!"
+             │
+             └─ Sem match: MENT_ROLE (fui mentor/mentorado) ─► MENT_SUBJECT (assunto)
+                   ─► MENT_DATE / MENT_DATE_TEXT (hoje, ontem, outra) ─► MENT_PARTNER (contato, número ou nome)
+                   ─► "Mentoria registrada!"
+
+ └─► O parceiro recebe "Você participou de uma mentoria com X em D?"  [Sim] [Não]
+        ├─ Sim ─► segue para a análise
+        └─ Não ─► gravação apagada, não gera certificado
+ └─► Curadoria (equipe + analisador no notebook) decide:
+        ├─ aprovada ─► aviso ✅ para o participante
+        └─ recusada ─► aviso com [Pedir revisão] (revisão humana, LGPD art. 20)
+ └─► "Quero meu certificado" ─► confere mentorias aprovadas ─► grava o pedido e avisa a equipe
+```
+
+**Troca de assunto no meio do registro** (`SWITCH_DOUBT`): se a pessoa estava mandando a mentoria e diz "quero tirar uma dúvida", o bot pergunta "Você vai registrar a mentoria agora?". Sim = volta de onde parou; Não = apaga o rascunho e o áudio incompleto e começa a dúvida.
+
+**Como o analisador decide uma sessão** (resumo; detalhe no documento de critérios): status **Recomendada** (todos os critérios verificáveis atendem), **Revisão humana** (dúvida ou sinal de risco) ou **Recusada** (um critério bloqueante falha, ex.: gravação repetida, sem fala real, um dos dois ausente por mais de 5 min, abaixo do mínimo). Na dúvida, nunca aprova sozinho.
+
+### 17.8 Quando o bot NÃO responde (ou responde curto)
+
+```
+Entrada inesperada no estado atual
+ ├─ 1ª vez ─► UMA dica que repete as opções ("Digite 1, 2 ou 3")
+ ├─ depois ─► aviso curto de "aqui não é lugar de resenha…" (tom de estudante; a IA reescreve,
+ │            com texto fixo de reserva se a IA falhar ou vier link/número)
+ ├─ última vaga ─► despedida ("vou ficar na minha…")
+ └─ depois ─► silêncio até chegar uma entrada válida
+```
+
+Silêncio também para: repetição da mesma escolha de menu, reação/vídeo/localização/contato, qualquer coisa acima dos limites por pessoa, trava manual ligada ou anti-flood no teto. **Saudação** é exceção: sempre recebe retorno ("tô aqui") e a pergunta pendente. **Modo cuidado:** depois de um tema sensível, por 1 hora não vai figurinha nem brincadeira.
+
+### 17.9 O papel da IA (e o que ela NÃO faz)
+
+| Faz | Não faz |
+|---|---|
+| Escolhe **uma opção** de uma lista fechada quando o bot não entende | Escrever mensagem livre ou prometer algo |
+| Lê dias/horários escritos em linguagem natural (só se as regras falharam) | Marcar, cancelar ou salvar algo (quem confirma é o sistema) |
+| Diz se um nome parece real ou apelido | Receber dados antes do aceite LGPD |
+| Reescreve avisos curtos (fora de assunto, retomada, "vlw") | Citar nome, horário ou local de pessoas |
+| Provedores gratuitos e com limite diário; se estourar, vale o texto fixo | Revelar quem é o mentor/mentorado (texto fixo, sem IA) |
+
+### 17.10 Proteção do número (R1) e privacidade (R3, R6)
+
+- **Só escreve a quem escreveu primeiro.** Sem mensagem fria.
+- **Trava manual** (só um humano liga e fecha) e **anti-flood** diário opcional.
+- O endpoint do webhook responde **200** mesmo com tudo travado: "quebrar" = parar de enviar.
+- Nada é guardado antes do **aceite** dos termos; telefones aparecem mascarados nos logs e em hash no armazenamento; o áudio é apagado do servidor do bot quando o notebook confirma o recebimento.
+
+## 18. Roteiro sugerido para o vídeo em animação
+
+Sugestão de duração: 2 a 3 minutos, personagem-guia o **Axo** (axolote), mostrando a tela do WhatsApp à esquerda e os "bastidores" à direita (o funil da seção 17.1 se acendendo).
+
+| # | Cena | O que mostrar na tela | Mensagem principal |
+|---|---|---|---|
+| 1 | Abertura | Estudante trava num módulo; o Axo aparece | "Ninguém se regenera sozinho" |
+| 2 | Primeiro "oi" | Mensagem chega; o funil (17.1) acende de cima para baixo | O bot decide quem pode falar e o que fazer |
+| 3 | Consentimento | Botão **Aceito**; cadeado nos dados | Nada é guardado antes do aceite (LGPD) |
+| 4 | Cadastro | Nome, turma, idade, áudio de curiosidades | Quatro perguntas, uma por vez |
+| 5 | Papel | Três caminhos: mentor, mentorado, os dois | A árvore se divide (17.4) |
+| 6 | Áreas e dúvida | Lista de áreas / balão com a dúvida | Mentor escolhe áreas; mentorado conta o problema |
+| 7 | Horários | Calendário se preenchendo por listas | Disponibilidade dos dois |
+| 8 | O match | Equipe liga mentor e dúvida; mentor aceita | O bot negocia, a equipe conecta |
+| 9 | Anonimato | Dois avatares com "?" no rosto | Nomes só chegam 5 min antes |
+| 10 | Confirmação + critérios | Cartão "Mentoria confirmada!" e a lista de critérios | O que mentor e mentorado precisam cumprir |
+| 11 | A mentoria | Os dois conversando, gravando | Conversa inteira, os dois falam, mínimo 20 min |
+| 12 | Registro | Áudio sobe; parceiro responde Sim/Não | Dupla confirmação |
+| 13 | Curadoria | Selo: ✅ aprovada ou ❌ recusada (+ Pedir revisão) | Na dúvida, um humano decide |
+| 14 | Certificado | Pedido de certificado | Horas de Atividade Complementar |
+| 15 | Cuidados | Axo calado quando não é a hora; cadeado do anti-ban | Responde só quando faz sentido (17.8) |
+| 16 | Encerramento | Logo Be My Mentor | "Quer ajudar? Quer ser ajudado? Manda um oi." |
+
+Dica de produção: use **uma cor por jornada** (cadastro, perfil, match, registro, curadoria) para a árvore da seção 17.2 ficar legível quando aparecer em pedaços.
+
+## 19. Glossário de estados
+
+| Estado | Significado |
+|---|---|
+| `NEW` | Pessoa nova, ainda não disse "oi" |
+| `AWAIT_REGISTRATION`, `REG_CONSENT` | Aguardando o aceite dos termos |
+| `REG_FIELD_full_name`, `REG_NAME_CONFIRM` | Nome completo e confirmação de nome estranho |
+| `REG_FIELD_class_name`, `REG_AGE` | Turma e idade |
+| `REG_PROFILE_AUDIO` | Áudio (ou texto) de apresentação |
+| `PROFILE_ROLE` | Mentor, mentorado ou os dois |
+| `MENTOR_CATEGORIES`, `MENTOR_CATEGORIES_BOTH` | Escolha das áreas (só mentor / mentor e mentorado) |
+| `REMOVE_CATEGORIES` | Escolha da área a retirar (só abre se a pessoa pedir por texto) |
+| `DOUBT_ASK`, `DOUBT_TEXT` | "Tem uma dúvida?" e a descrição dela |
+| `SCHED_DAYS_*`, `SCHED_HOURS_*`, `SCHED_CONFIRM_*` | Dias e horários em listas (mentor, mentorado ou match) |
+| `AVAILABILITY_TEXT` | Horários digitados em texto livre |
+| `RETURNING_CHOICE` | Cadastrado que voltou: dúvida, mudar áreas ou menu |
+| `MENU` | Menu de serviços |
+| `AWAIT_AUDIO`, `PROCESSING_AUDIO` | Esperando o áudio da mentoria / processando |
+| `MENT_ROLE`, `MENT_SUBJECT`, `MENT_DATE`, `MENT_DATE_TEXT`, `MENT_PARTNER` | Registro manual da mentoria (papel, assunto, data, parceiro) |
+| `MENT_EARLY_CONFIRM` | Áudio chegou antes do horário: "já fizeram?" |
+| `SWITCH_DOUBT` | "Você vai registrar a mentoria agora?" |
+| `MATCH_MENTOR_ACCEPT` | Mentor decide se aceita a mentoria |
+| `MATCH_MENTEE_PICK`, `MATCH_MENTEE_TIME`, `MATCH_MENTEE_PLACE` | Mentorado escolhe horário, duração e local |
+| `COMPLETED` | Fluxo concluído; "oi" ou "menu" reabre |
+| `OPTED_OUT` | Pediu para sair; só "voltar" reativa |

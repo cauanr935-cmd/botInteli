@@ -19,7 +19,7 @@ Objetivo: publicar o bot sem custo. Faça os passos na ordem. Cada passo marcado
 
 No SQL Editor (ou `supabase db push`), aplique **em ordem** os arquivos de `supabase/migrations/`:
 
-`0001_processed_messages.sql`, `0002_budget.sql`, `0003_conversation.sql`, `0004_registration.sql`, `0005_services.sql`, `0006_last_service.sql`, `0007_audios.sql`, `0008_housekeeping.sql`, `0009_mentorias.sql`, `0010_perfil_duvidas.sql`, `0011_horarios_contato.sql`, `0012_materiais.sql`, `0013_horarios_estruturados.sql`, `0014_perfil_texto.sql`, `0015_mentoria_v2.sql`, `0016_sensitive_events.sql`, `0017_pending_choices.sql`.
+`0001_processed_messages.sql`, `0002_budget.sql`, `0003_conversation.sql`, `0004_registration.sql`, `0005_services.sql`, `0006_last_service.sql`, `0007_audios.sql`, `0008_housekeeping.sql`, `0009_mentorias.sql`, `0010_perfil_duvidas.sql`, `0011_horarios_contato.sql`, `0012_materiais.sql`, `0013_horarios_estruturados.sql`, `0014_perfil_texto.sql`, `0015_mentoria_v2.sql`, `0016_sensitive_events.sql`, `0017_pending_choices.sql`, `0018_matching.sql`, `0019_nome_cauan.sql`, `0020_nova_mentoria.sql`, `0021_curadoria.sql`, `0022_match_v2.sql`, `0023_certificado_pedidos.sql`.
 
 Depois copie `SUPABASE_URL` e a **service key** (Settings > API). A service key é segredo: nunca vai para o git.
 
@@ -59,6 +59,7 @@ Todas as variáveis de `.dev.vars.example`:
 | `ANALYZER_API_URL` | var | URL da API de análise de áudio. |
 | `ANALYZER_API_KEY` | secret | Chave da API de análise. |
 | `ADMIN_TOKEN` | secret | Valor longo e aleatório; protege `/admin/*`. |
+| `ADMIN_WA_IDS` | secret | Números E.164 dos admins do matching, separados por vírgula (ex.: `+5511999990000,+5511988887777`). Habilita `/duvidas` e `/mentores` no WhatsApp. Vazio = ninguém é admin. |
 | `TIMEZONE` | var | Fuso que define a virada do dia (padrão `America/Sao_Paulo`). `META_ACCOUNT_TIMEZONE` antigo ainda vale como alias. |
 | `ANTI_FLOOD_MAX_PER_DAY` | var | Teto de mensagens enviadas por dia pelo número (proteção contra banimento). `0` = desligado (padrão); máximo 990. |
 | `MAX_BOT_MSGS_PER_USER_PER_DAY` | var | Padrão 12. |
@@ -66,8 +67,13 @@ Todas as variáveis de `.dev.vars.example`:
 | `PRIVACY_POLICY_URL` | var | URL pública da política de privacidade. |
 | `TERMS_VERSION` | var | Versão do termo (ex.: `2025-01`); gravada com o consentimento. |
 | `MAX_AUDIO_BYTES` | var | Padrão 16000000. |
+| `MAX_AUDIO_STREAM_BYTES` | var | Padrão 300000000. Teto dos arquivos copiados em stream do S3/R2 da Evolution (ver "Áudios grandes" abaixo). |
+| `MEDIA_URL_HOSTS` | var | Hosts permitidos da URL do arquivo no S3 (separados por vírgula). Vazio = só o download normal, até `MAX_AUDIO_BYTES`. |
 | `ANALYZER_TIMEOUT_MS` | var | Padrão 8000. |
-| `AI_API_KEY` | secret | Chave da IA. `gsk_…` = Groq; `xai-…` = xAI Grok (o provedor é detectado pelo prefixo). Opcional: sem ela o bot funciona sem IA. Nomes antigos `XAI_API_KEY` e `GROQ_API_KEY` também valem. |
+| `NETWORK_OPEN_AT` | var | Abertura da rede (ISO com fuso, ex.: `2026-11-23T00:00:00-03:00`). Antes disso as pessoas se cadastram, mas **não pedem mentoria**. Vazio = rede aberta. |
+| `NETWORK_EARLY_ACCESS` | secret | Números liberados para pedir mentoria antes da abertura, separados por vírgula (ex.: `88999990000,85 9999-0000`; DDI 55 e 9º dígito são opcionais). `wrangler secret put NETWORK_EARLY_ACCESS`. Sem ele, ninguém é liberado. |
+| `AI_API_KEY` | secret | Chave da IA. `gsk_…` = Groq; `AIza…` ou `AQ.…` = Google Gemini (gratuito, modelo padrão `gemini-flash-latest`); `xai-…` = xAI Grok (o provedor é detectado pelo prefixo). Opcional: sem ela o bot funciona sem IA. Nomes antigos `XAI_API_KEY` e `GROQ_API_KEY` também valem. |
+| `GROQ_API_KEY` / `GEMINI_API_KEY` | secret (opcional) | Só para o painel conferir o estado do provedor que o bot **não** está usando (o que está em uso vem de `AI_API_KEY`). Sem elas, a linha do outro provedor aparece como "sem chave". |
 | `AI_MODEL` | var | Padrão por provedor: Groq `openai/gpt-oss-120b`, xAI `grok-4`. Confirme o nome no console do provedor. |
 | `AI_BASE_URL` | var | Padrão por provedor (Groq `https://api.groq.com/openai/v1`, xAI `https://api.x.ai/v1`); precisa ser https. |
 | `AI_TIMEOUT_MS` | var | Padrão 6000. Passou disso, o bot decide sozinho. |
@@ -112,10 +118,10 @@ Segredos (nunca no código). Gere o hash da senha e os valores aleatórios com `
 - `PANEL_PASSWORD_HASH`: hash PBKDF2 impresso pelo script (a senha não é guardada).
 - `PANEL_SESSION_SECRET`: segredo (32+ caracteres) que assina a sessão.
 - `INTEGRATION_API_KEY`: chave (32+ caracteres) do sistema analisador.
-
-Painel: `https://<seu-worker>.workers.dev/painel` (login; bloqueio por tentativas). API do analisador (`Authorization: Bearer <INTEGRATION_API_KEY>`): `GET /api/v1/mentorias?status=pending`, `GET /api/v1/mentorias/<id>/audio`, `POST /api/v1/mentorias/<id>/result`. Detalhes em `bot.md`.
 - `PESSOA_ID_SECRET`: segredo (32+ caracteres) do HMAC que gera o `pessoa_id` (telefone -> id) usado no banco, no caminho do R2 (`audios/<pasta>/<pessoa_id>/`, `materiais/<pessoa_id>/`) e na API. Gere e envie sem exibir: `openssl rand -hex 32 | npx wrangler secret put PESSOA_ID_SECRET`. **Faça backup fora da Cloudflare** (gerenciador de senhas): os secrets do Worker não podem ser lidos de volta. **NUNCA troque o valor sem uma migração**: o notebook usa o `pessoa_id` para somar as horas e o histórico de conduta de cada pessoa, e trocar o segredo gera outro id para o mesmo telefone (a pessoa vira outra, no banco, no R2 e no notebook). Sem o segredo o Worker falha fechado (não grava nem envia). Em 2026-11-18, antes da troca para HMAC, as duas linhas de teste que existiam (`users`: 1, sem consentimento e sem `wa_id_hash`; `pending_choices`: 1) foram apagadas com `delete from pending_choices; delete from users;` (**já executado**; `audios`, `doubts`, `doubt_materials` e `matches` já estavam vazias). Com a base vazia não há migração de banco nem de R2. Se algum dia o segredo precisar mudar com dados no banco, será preciso um script que recalcule `wa_id_hash` a partir de `users.wa_id` e copie as chaves do R2 para o caminho novo, com verificação.
 Ordem de publicação: `npm run verify` 100% verde -> `wrangler secret put PESSOA_ID_SECRET` -> `wrangler deploy`.
+
+Painel: `https://<seu-worker>.workers.dev/painel` (login; bloqueio por tentativas). API do analisador (`Authorization: Bearer <INTEGRATION_API_KEY>`): `GET /api/v1/mentorias?status=pending`, `GET /api/v1/mentorias/<id>/audio`, `POST /api/v1/mentorias/<id>/result`. Detalhes em `bot.md`.
 
 Cada mentoria consome cerca de 6 mensagens do bot; por isso `MAX_BOT_MSGS_PER_USER_PER_10MIN` e `..._PER_DAY` ficam em 8 e 40 no `wrangler.toml`.
 
@@ -143,9 +149,17 @@ Antes de divulgar, teste com 2 ou 3 contatos seus: boas-vindas, consentimento, c
 - [ ] Política de privacidade publicada; `PRIVACY_POLICY_URL` e `TERMS_VERSION` definidos.
 - [ ] Fuso conferido (`TIMEZONE`).
 - [ ] **Risco de banimento aceito** (Baileys é não oficial): chip dedicado, número aquecido, `ANTI_FLOOD_MAX_PER_DAY` definido.
-- [ ] Migrações 0001 a 0017 aplicadas; bucket R2 criado com retenção definida.
+- [ ] Migrações 0001 a 0023 aplicadas; bucket R2 criado com retenção definida.
 - [ ] Contrato do analisador definido e testado.
 - [ ] Monitorar `GET /admin/budget` (uso do dia, trava) e os logs `warn` (80% do teto) e `critical` (teto atingido). A trava manual pode ser ligada pelo banco e só é liberada por `POST /admin/budget/unlock`.
+
+## Trocar a IA para o Google Gemini (opcional)
+
+1. Crie a chave no Google AI Studio (formato `AIza…` ou `AQ.…`).
+2. `wrangler secret put AI_API_KEY` e cole a chave. O bot detecta o Gemini pelo prefixo (modelo `gemini-flash-latest`).
+3. Se existirem `AI_BASE_URL`/`AI_MODEL` de outro provedor, apague (`wrangler secret delete`): valores que não são do Google são ignorados, mas confundem o painel.
+4. **Reserva automática:** se existirem chaves de outros provedores (`GROQ_API_KEY`, `XAI_API_KEY`...), elas viram reserva: quando o Gemini falha (503, limite, timeout), a mesma pergunta vai à Groq/xAI. Não precisa configurar nada.
+5. Faça o deploy e confira o painel (estado da IA) e os logs `choice_not_understood` (devem cair).
 
 ## IA como supervisor do bot (opcional: Groq ou xAI Grok)
 
@@ -186,3 +200,25 @@ Etapa 1 (arquivo -> papel -> assunto -> data -> parceiro -> confirmação do par
 2. **Deploy do Worker**: `npm run verify && npx wrangler deploy`.
 3. **Cron**: o gatilho diário já existente passa a limpar também as mentorias (incompletas > 24 h; sem resposta do parceiro > 7 dias). Confirmar nos logs `cron_mentoria_cleanup`.
 4. **Compatibilidade com o notebook** (rotas `/api/v1/mentorias` iguais): `status=pending` agora só lista mentorias confirmadas pelo parceiro (as anteriores à v2, sem `ocorreu_em`, continuam listadas). O notebook não precisa mudar.
+
+
+## Aviso da decisão da equipe (curadoria) [humano]
+
+O notebook reenvia `POST /api/v1/mentorias/<id>/result` com `result.curadoria`; o bot avisa cada participante quando a situação dele muda para `aprovada` ou `recusada` (contrato em `docs/INTEGRACAO_TRANSCRITOR.md`). **Nada disto foi aplicado em produção pelos agentes.**
+
+1. **Migração** (antes do deploy do código; só acrescenta uma coluna, duas funções e a tabela `revisao_pedidos`, então o código antigo continua funcionando):
+   - SQL Editor do Supabase: colar e rodar `supabase/migrations/0021_curadoria.sql`; ou `supabase db push`.
+   - Conferir: `select column_name from information_schema.columns where table_name = 'audios' and column_name = 'notified_curadoria';` (1 linha) e `select to_regclass('public.revisao_pedidos');` (não nulo).
+2. **Deploy do Worker**: `npm run verify && npx wrangler deploy` (só com o verify 100% verde).
+3. **Conferir**: o notebook reenvia o resumo de uma mentoria de teste; a mensagem chega uma vez (reenvio igual não manda de novo) e o painel mostra a curadoria e "já avisado".
+
+
+## Áudios grandes (gravar direto no R2)
+
+O download pelo Worker (base64) passa de 16 MB e estoura a memória (128 MB). Para arquivos grandes, a **Evolution grava no R2** (S3) e o Worker só **copia em stream** para `audios/mentorias/...`:
+
+1. No `.env` da Evolution (VM): `S3_ENABLED=true`, `S3_ACCESS_KEY`/`S3_SECRET_KEY` (token S3 do R2), `S3_BUCKET=<bucket de mídia da Evolution>`, `S3_ENDPOINT=<conta>.r2.cloudflarestorage.com`, `S3_PORT=443`, `S3_USE_SSL=true`, `S3_REGION=auto`. Exponha o bucket por um domínio público/URL assinada.
+2. No Worker: `MEDIA_URL_HOSTS="<host da URL>"` (anti-SSRF: outros hosts são ignorados) e, se quiser, `MAX_AUDIO_STREAM_BYTES`.
+3. O webhook passa a trazer `mediaUrl` na mensagem. Sem `mediaUrl` ou host não listado, o bot usa o caminho antigo (limite de `MAX_AUDIO_BYTES`).
+
+**Não verificado contra uma instância real:** o nome do campo `mediaUrl` e o formato da URL (ver `docs/PENDENCIAS_HUMANAS.md`).

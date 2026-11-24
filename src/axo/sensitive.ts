@@ -70,7 +70,8 @@ export const SENSITIVE_MESSAGES: Record<SensitiveLevel, string> = {
 
 /** Rodapé do modo cuidado em respostas acadêmicas. */
 export const CARE_FOOTER = "CVV: 188, 24h";
-export const CARE_MODE_MS = 24 * 60 * 60 * 1000;
+/** Duração do modo cuidado: 1 hora depois do tema sensível; passou disso, o rodapé do CVV e o tom neutro deixam de aparecer. */
+export const CARE_MODE_MS = 60 * 60 * 1000;
 
 /** Único registro permitido do evento: nível, data e canal. Nunca o texto. */
 export interface SensitiveEvent {

@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 const filled: LegalInfo = {
   controllerName: "Be My Mentor Ltda", controllerDoc: "00.000.000/0001-00", controllerAddress: "Rua Exemplo, 1, Fortaleza/CE",
-  contactEmail: "privacidade@exemplo.org", dpo: "Fulana de Tal (dpo@exemplo.org)", forum: "Fortaleza/CE",
+  contactEmail: "privacidade@exemplo.org", dpo: "Fulana de Tal (dpo@exemplo.org)",
 };
 
 describe("Termos de Uso e Política de Privacidade (LGPD)", () => {
@@ -17,20 +17,21 @@ describe("Termos de Uso e Política de Privacidade (LGPD)", () => {
     for (const t of [
       /Lei nº 13\.709\/2018/, /Controlador/, /Encarregado/, /art\. 41/, /Bases? legal|Base legal/, /Consentimento/,
       /Transferência internacional/, /art\. 33/, /Seus direitos/, /art\. 18/, /confirmação/i, /eliminação/i, /portabilidade/i,
-      /revogação do consentimento/i, /15 dias/, /ANPD/, /Crianças e adolescentes/, /art\. 14/, /art\. 20/, /art\. 46/, /art\. 48/,
+      /revogação do consentimento/i, /15 dias/, /ANPD/, /crianças e adolescentes/i, /art\. 14/, /art\. 20/, /art\. 46/, /art\. 48/,
       /dados pessoais sensíveis/i, /Por quanto tempo guardamos/,
     ]) expect(html, String(t)).toMatch(t);
   });
   it("descreve os dados e fluxos reais do bot", () => {
     for (const t of [
       /Número de WhatsApp/, /Nome completo e turma/, /Áudio de apresentação/, /Dúvidas e documentos/, /Dias e horários livres/,
-      /Áudios das mentorias/, /diarização/, /blockchain/i, /horas complementares/i, /Groq/, /Cloudflare/, /Supabase/, /Meta\/WhatsApp/,
+      /Áudios das mentorias/, /diarização/, /carimbos? de tempo/i, /horas complementares/i, /Groq \/ xAI/, /Cloudflare/, /Supabase/, /WhatsApp \(Meta\)/,
       /sem nome nem telefone|sem seu nome nem seu telefone/, /sair/, /88 99289-5332/, /wa\.me\/5588992895332/,
     ]) expect(html, String(t)).toMatch(t);
   });
-  it("declara a imutabilidade da blockchain e que só vão dados pseudonimizados", () => {
-    expect(html).toMatch(/imutável por natureza/);
+  it("declara que o livro de registro só tem dados pseudonimizados e que a instituição só recebe o certificado", () => {
     expect(html).toMatch(/somente informações pseudonimizadas/);
+    expect(html).toMatch(/só recebe o <b>certificado<\/b>/);
+    expect(html).toMatch(/não são enviadas a nenhum serviço de IA de terceiros/);
   });
   it("dados do controlador preenchidos: sem aviso de rascunho e sem placeholders", () => {
     expect(pendingFields(filled)).toEqual([]);
@@ -39,11 +40,19 @@ describe("Termos de Uso e Política de Privacidade (LGPD)", () => {
     expect(html).toContain("Be My Mentor Ltda");
     expect(html).toContain(`Versão ${LEGAL_VERSION}`);
   });
-  it("com campos vazios (estado atual) a página se declara RASCUNHO e marca o que falta", () => {
-    const draft = renderLegalPage(LEGAL_INFO);
-    expect(pendingFields(LEGAL_INFO).length).toBeGreaterThan(0);
-    expect(draft).toMatch(/RASCUNHO/);
-    expect(draft).toMatch(/\[a preencher\]/);
+  it("página em fundo branco e letra preta, sem modo escuro", () => {
+    expect(html).toMatch(/background:#fff;color:#000/);
+    expect(html).not.toMatch(/prefers-color-scheme/);
+  });
+  it("não expõe achados internos do dossiê", () => {
+    expect(html).not.toMatch(/Baileys|banid|botInteli|achado \d|pendente/i);
+  });
+  it("a página oficial já vem completa: sem rascunho e sem campos a preencher", () => {
+    expect(pendingFields(LEGAL_INFO)).toEqual([]);
+    const official = renderLegalPage(LEGAL_INFO);
+    expect(official).not.toMatch(/RASCUNHO|a preencher/);
+    for (const t of ["70.237.372/0001-11", "Rua MMDC", "bemymentoris@gmail.com", "Cauan da Rocha Martins"]) expect(official).toContain(t);
+    expect(official).not.toMatch(/“nós”/);
   });
   it("escapa HTML nos campos do controlador", () => {
     const evil = renderLegalPage({ ...filled, controllerName: '<script>alert(1)</script>' });

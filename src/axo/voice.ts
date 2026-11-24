@@ -21,18 +21,18 @@ const EX: Record<Step, string> = {
   days: "\"quarta à tarde\" ou \"sexta das 14h às 16h\"",
   hours: "\"de manhã\" ou \"das 14h às 16h\"",
 };
-const OR: Record<Step, string> = { days: "*Escolher dias*", hours: "*Escolher horários*" };
+const OR: Record<Step, string> = { days: "digite o número de um dia da lista", hours: "digite o número de um horário da lista" };
 
 /** Acolhe o desabafo (1 frase) e volta a pedir só o horário, com a saída por botão. */
 export function ventScheduleHint(raw: string, step: Step): string {
   const ask = EX[step];
   switch (registerOf(raw)) {
     case "casual":
-      return `puxado mesmo, tudo se regenera por aqui. me diz só um respiro que sobra pra mentoria, tipo ${ask}. ou toca em ${OR[step]}.`;
+      return `puxado mesmo, tudo se regenera por aqui. me diz só um respiro que sobra pra mentoria, tipo ${ask}. ou ${OR[step]}.`;
     case "direto":
-      return `Entendido, semana pesada. Passe só o horário livre, ex.: ${ask}. Ou toque em ${OR[step]}.`;
+      return `Entendido, semana pesada. Passe só o horário livre, ex.: ${ask}. Ou ${OR[step]}.`;
     default:
-      return `Imagino, o Learning Backlog pesa mesmo. Me diz só quando sobra um respiro, tipo ${ask}. Se preferir, toque em ${OR[step]}.`;
+      return `Imagino, o Learning Backlog pesa mesmo. Me diz só quando sobra um respiro, tipo ${ask}. Se preferir, ${OR[step]}.`;
   }
 }
 
@@ -63,6 +63,21 @@ const OFF_TOPIC: readonly Record<Register, string>[] = [
     neutro: "Eu até toparia essa resenha, mas meu negócio aqui é mentoria. Guarda esse papo pro intervalo e me diz se posso ajudar com alguma matéria.",
     direto: "Fora do meu escopo. Se tiver dúvida de alguma matéria, me fala que eu te ligo a um veterano.",
   },
+  {
+    casual: "eita, não peguei o que você quis dizer 😅 me explica de outro jeito? se for dúvida ou mentoria, eu tô dentro.",
+    neutro: "Não consegui entender o que você quis dizer. Pode explicar de outro jeito? Se for dúvida ou mentoria, eu ajudo.",
+    direto: "Não entendi. O que você quis dizer?",
+  },
+  {
+    casual: "hmm, essa eu não saquei 🦎 o que você quis dizer? resenha eu até curto, mas aqui o foco é mentoria.",
+    neutro: "Essa eu não saquei. O que você quis dizer? Resenha eu até curto, mas aqui o foco é mentoria.",
+    direto: "Não compreendi. Reescreva, por favor, o que você precisa.",
+  },
+  {
+    casual: "essa escapou das minhas brânquias 🦎 me explica de outro jeito? se for dúvida ou mentoria, eu mergulho junto.",
+    neutro: "Essa escapou das minhas brânquias. Pode explicar de outro jeito? Se for dúvida ou mentoria, eu mergulho junto.",
+    direto: "Não captei. Explique de outro jeito o que você precisa.",
+  },
 ];
 
 /** Despedida: sai na última vaga de mensagens, avisando que o silêncio vem aí e como me chamar de volta. */
@@ -79,8 +94,64 @@ const OFF_TOPIC_LAST: Record<Register, string> = {
  */
 export function offTopicNotice(raw: string, slotsLeft: number, variant = 0): string | null {
   if (slotsLeft < 1) return null;
-  if (!/[a-zà-ú]{2,}/i.test(raw)) return null; // só emoji, pontuação ou "k": não vale um aviso
+  // Só emoji, figura ou pontuação também ganha resposta (nunca silêncio de cara): pede para escrever.
+  if (!/[a-zà-ú]{2,}/i.test(raw)) return slotsLeft === 1 ? OFF_TOPIC_LAST.casual : "hmm, não entendi esse aí 😅 o que você quis dizer? me escreve em palavras que eu te ajudo.";
   const register = registerOf(raw);
   if (slotsLeft === 1) return OFF_TOPIC_LAST[register];
   return OFF_TOPIC[Math.abs(variant) % OFF_TOPIC.length]![register];
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Saudação no meio de uma etapa ("oi", "tá por aí?", "alô"): a pessoa NUNCA fica sem feedback. O bot confirma que está
+// vivo e repete o que está esperando dela (a pergunta da etapa vai logo abaixo, montada pelo motor).
+
+const RESUME: readonly Record<Register, string>[] = [
+  {
+    casual: "opa, tô por aqui sim! 🦎 a gente tava no meio de uma coisa, então me responde isso pra eu seguir:",
+    neutro: "Oi! Estou por aqui. Ficou uma pergunta pendente, então responda a esta para eu continuar:",
+    direto: "Estou aqui. Falta responder:",
+  },
+  {
+    casual: "continuo aqui, firme! falta só você responder isso:",
+    neutro: "Continuo aqui. Falta só responder isto:",
+    direto: "Pendente:",
+  },
+  {
+    casual: "bora retomar de onde a gente parou? é só responder aqui:",
+    neutro: "Vamos concluir esta etapa? É só responder abaixo:",
+    direto: "Responda abaixo para continuarmos:",
+  },
+  {
+    casual: "tô aqui, de brânquias abertas! 🦎 só falta você responder isso pra gente seguir:",
+    neutro: "Estou aqui, de brânquias abertas. Só falta responder isto para seguirmos:",
+    direto: "Estou aqui. Falta apenas:",
+  },
+];
+
+/** Abertura da mensagem que retoma a etapa pendente. `variant` alterna para não repetir a mesma fala. */
+export function resumeLead(raw: string, variant = 0): string {
+  return RESUME[Math.abs(variant) % RESUME.length]![registerOf(raw)];
+}
+
+/** Saudação quando não há pergunta pendente (fim do fluxo, etc.): mostra o que dá para fazer. */
+export function idleGreeting(raw: string): string {
+  return ({
+    casual: "opa, tô por aqui! 🦎 quer tirar uma dúvida ou mexer em alguma coisa? manda *menu* que eu mostro as opções.",
+    neutro: "Oi, estou por aqui! Quer tirar uma dúvida ou ajustar algo? Envie *menu* para ver as opções.",
+    direto: "Estou aqui. Envie *menu* para ver as opções ou escreva sua dúvida.",
+  } as Record<Register, string>)[registerOf(raw)];
+}
+
+export const OPTED_OUT_GREETING = "Oi! Você pausou as mensagens por aqui. Se quiser voltar, é só mandar *voltar*. 🦎";
+export const PROCESSING_GREETING = "Tô por aqui! 🦎 Ainda estou cuidando do seu áudio, já já te respondo.";
+
+/** Resposta a "valeu"/"tchau" depois do fim do fluxo (vem junto de uma figurinha de despedida). */
+const FAREWELL: Record<Register, string>[] = [
+  { casual: "vlw! 🦎 qualquer coisa é só chamar.", neutro: "Valeu! 🦎 Qualquer coisa, é só chamar.", direto: "Combinado. Qualquer coisa, é só chamar." },
+  { casual: "tamo junto! 🦎 bons estudos.", neutro: "Tamo junto! 🦎 Bons estudos.", direto: "Até mais. Bons estudos." },
+  { casual: "fechou! 🦎 me chama se precisar.", neutro: "Fechou! 🦎 Me chame se precisar.", direto: "Fechado. Me chame se precisar." },
+  { casual: "vai com calma que tudo se regenera: ponderada, sprint, tudo. me chama quando precisar 🦎", neutro: "Vai com calma, que tudo se regenera: ponderada, sprint, tudo. Me chame quando precisar. 🦎", direto: "Até a próxima. Me chame quando precisar." },
+];
+export function farewellText(raw: string, variant = 0): string {
+  return FAREWELL[Math.abs(variant) % FAREWELL.length]![registerOf(raw)];
 }

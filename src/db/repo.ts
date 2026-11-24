@@ -1,12 +1,14 @@
 import type { Service } from "../services/content";
 
 /** Acesso a dados. Implementações: memória (testes) e Supabase (produção). */
-export interface Repo extends BudgetRepo, MentoriaRepo {
+export interface Repo extends BudgetRepo, MentoriaRepo, MatchingRepo {
   /**
    * Registra a chave de idempotência (wamid) ANTES de processar.
    * Devolve true se foi inserida agora; false se já existia. Deve ser atômico.
    */
   claimMessage(key: string, receivedAt: Date): Promise<boolean>;
+  /** Dentre as chaves dadas, as que o bot ainda NÃO viu (recuperação de mensagens perdidas). */
+  unseenMessageKeys(keys: readonly string[]): Promise<string[]>;
   /** Libera a chave de idempotência (usado só para status cujo tratamento falhou, para a Meta poder reenviar). */
   unclaimMessage(key: string): Promise<void>;
   /** Atualiza last_user_message_at do usuário (nunca regride). */
@@ -25,7 +27,7 @@ export interface Repo extends BudgetRepo, MentoriaRepo {
   saveRegistration(waId: string, patch: RegistrationPatch): Promise<void>;
   /** Tema sensível: grava só o evento (nível, canal, data), nunca o texto. */
   recordSensitiveEvent(waIdHash: string, level: "A" | "B", channel: string, at: Date): Promise<void>;
-  /** Instante do último evento sensível da pessoa (null = nunca). Define o modo cuidado de 24 h. */
+  /** Instante do último evento sensível da pessoa (null = nunca). Define o modo cuidado de 1 h. */
   lastSensitiveEventAt(waIdHash: string): Promise<Date | null>;
   /**
    * Opções (botões/lista) da última mensagem interativa enviada, em texto numerado. `null` apaga.
@@ -54,7 +56,7 @@ export interface Repo extends BudgetRepo, MentoriaRepo {
   saveAvailability(waId: string, text: string, at: Date, slots?: readonly { day: string; start: string; end: string }[]): Promise<void>;
   /** Material (documento) anexado junto da dúvida. Sem consentimento, lança (R6). */
   insertMaterial(waId: string, m: { id: string; waIdHash: string; r2Key: string; mime: string; bytes: number; filename?: string; at: Date }): Promise<void>;
-  insertDoubt(waId: string, doubt: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void>;
+  insertDoubt(waId: string, doubt: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void>; // grava também o wa_id e status "aberta"
   /** Mentoria: rascunho em andamento (papel, assunto, com quem). */
   getMentoriaDraft(waId: string): Promise<MentoriaDraft>;
   /** Mescla campos no rascunho; `null` apaga o rascunho inteiro. Lança se a pessoa não existir. */
@@ -154,6 +156,23 @@ export interface MentoriaRow {
   audioSha256?: string | null;
   audioDeletedAt?: Date | null;
   contestedReason?: "recusada" | "expirada" | null;
+  /** Última situação da curadoria já avisada, por pessoa_id (hash). Vazio/ausente = ninguém avisado. */
+  notifiedCuradoria?: Record<string, string> | null;
+}
+
+/** Pedido de revisão humana (botão "Pedir revisão" da mensagem de recusa). */
+export interface CertificateRequest {
+  id: string;
+  waIdHash: string;
+  status: "aberto" | "emitido";
+  createdAt: Date;
+}
+export interface ReviewRequest {
+  id: string;
+  audioId: string;
+  waIdHash: string;
+  status: "aberta" | "atendida";
+  createdAt: Date;
 }
 
 /** Leitura e atualização das mentorias (painel e API de integração). */
@@ -166,6 +185,16 @@ export interface MentoriaRepo {
   getMentoria(id: string): Promise<MentoriaRow | null>;
   /** Grava o resultado da análise. false se a mentoria não existe. */
   setAnalysisResult(id: string, result: unknown, at: Date): Promise<boolean>;
+  /** Reserva atômica do aviso da curadoria: grava a situação só se ainda não foi avisada. true = quem chamou deve enviar. */
+  claimCuradoriaNotice(id: string, pessoaId: string, situacao: string): Promise<boolean>;
+  /** Desfaz a reserva (envio falhou), só se ninguém a mudou depois. `previous` = o que estava gravado antes (null = nada). */
+  releaseCuradoriaNotice(id: string, pessoaId: string, situacao: string, previous: string | null): Promise<void>;
+  /** Registra o pedido de revisão. true = pedido novo; false = já existia (idempotente). */
+  requestReview(audioId: string, waIdHash: string, at: Date): Promise<boolean>;
+  listReviewRequests(o: { status?: "aberta" | "atendida"; limit: number }): Promise<ReviewRequest[]>;
+  /** Pedido de certificado de horas. false = a pessoa já tem um pedido ABERTO (não cria outro). */
+  requestCertificate(waIdHash: string, at: Date): Promise<boolean>;
+  listCertificateRequests(o: { status?: "aberto" | "emitido"; limit: number }): Promise<CertificateRequest[]>;
 }
 
 /** Bloqueio de tentativas de login do painel. */
@@ -192,6 +221,7 @@ export interface AudioRecord {
   audioSha256?: string;
   audioDeletedAt?: Date;
   contestedReason?: "recusada" | "expirada";
+  notifiedCuradoria?: Record<string, string>;
   status: "processing" | "done" | "failed";
   result: unknown;
   createdAt: Date;
@@ -234,6 +264,88 @@ export interface ConversationFields {
   optedOutAt: Date | null;
   lastServiceId?: string | null;
 }
+/** ---- Matching manual (mentor <-> mentorado, feito por um admin) ---- */
+export type DoubtStatus = "aberta" | "em_match" | "concluida" | "cancelada";
+export type MatchStatus = "aguardando_mentor" | "aguardando_mentorado" | "aguardando_local" | "confirmado" | "realizada" | "sem_horario" | "cancelado";
+export interface Slot { day: string; start: string; end: string }
+export interface DoubtRow {
+  id: string;
+  /** Id curto para o admin ("D12" = seq 12). */
+  seq: number;
+  waId: string;
+  text: string;
+  categories: string[];
+  status: DoubtStatus;
+  createdAt: Date;
+}
+export interface MemberCounts { mentors: number; mentees: number; total: number }
+export interface MentorRow {
+  /** Id curto para o admin ("M3" = seq 3). */
+  seq: number;
+  waId: string;
+  name: string | null;
+  categories: string[];
+  slots: Slot[];
+}
+export interface MatchRow {
+  id: string;
+  seq: number;
+  doubtId: string;
+  mentorWaId: string;
+  menteeWaId: string;
+  status: MatchStatus;
+  mentorSlots: Slot[] | null;
+  chosenDay: string | null;
+  chosenStart: string | null;
+  chosenEnd: string | null;
+  location: string | null;
+  /** Instante marcado do início da mentoria (UTC). null = ainda não fechada. */
+  scheduledAt: Date | null;
+  /** Quando os nomes foram enviados aos dois (5 min antes). null = anônimos. */
+  namesSentAt: Date | null;
+  createdBy: string;
+  createdAt: Date;
+}
+export type MatchPatch = Partial<Pick<MatchRow, "status" | "mentorSlots" | "chosenDay" | "chosenStart" | "chosenEnd" | "location" | "scheduledAt">>;
+/** Match com a dúvida que o originou (para o painel). */
+export interface MatchDetail extends MatchRow { doubtSeq: number; doubtText: string; doubtCategories: string[] }
+export interface MatchingRepo {
+  /**
+   * Troca o texto e as áreas da dúvida MAIS RECENTE da pessoa, se ela ainda estiver 'aberta' (sem mentor conectado).
+   * `false` = não há dúvida aberta para trocar.
+   */
+  replaceOpenDoubt(waId: string, doubt: { text: string; categories: string[] }): Promise<boolean>;
+  /** Matches mais recentes primeiro, com a dúvida. */
+  listMatches(limit: number): Promise<MatchDetail[]>;
+  /** Nome completo por telefone (quem ainda não tem nome fica de fora). */
+  getFullNames(waIds: readonly string[]): Promise<Record<string, string>>;
+  /** Dúvidas com status 'aberta', mais antigas primeiro. */
+  listOpenDoubts(limit: number): Promise<DoubtRow[]>;
+  getDoubtBySeq(seq: number): Promise<DoubtRow | null>;
+  getDoubtById(id: string): Promise<DoubtRow | null>;
+  /** Mentores cadastrados (papel mentor/ambos, com consentimento), por id curto. */
+  listMentors(limit: number): Promise<MentorRow[]>;
+  getMentorBySeq(seq: number): Promise<MentorRow | null>;
+  /** Inscritos com cadastro concluído e consentimento: mentores e mentorados (quem é "ambos" entra nos dois) e o total de pessoas (sem contar duas vezes). */
+  countMembers(): Promise<MemberCounts>;
+  /** Cria o match e passa a dúvida para 'em_match'. null se a dúvida não está mais 'aberta' (outro admin chegou antes). */
+  createMatch(m: { doubtId: string; mentorWaId: string; menteeWaId: string; createdBy: string; at: Date }): Promise<MatchRow | null>;
+  getMatchBySeq(seq: number): Promise<MatchRow | null>;
+  /** Match ativo (não cancelado nem confirmado) em que a pessoa é o mentor ou o mentorado. */
+  getActiveMatchFor(waId: string): Promise<MatchRow | null>;
+  updateMatch(id: string, patch: MatchPatch, at: Date): Promise<void>;
+  /** Último match 'confirmado' (mentoria marcada, ainda sem áudio registrado) em que a pessoa é mentor ou mentorado. */
+  getConfirmedMatchFor(waId: string): Promise<MatchRow | null>;
+  /** Matches confirmados com horário marcado até `until` (e depois de `since`) cujos nomes ainda não foram enviados. */
+  listMatchesDueForNames(since: Date, until: Date): Promise<MatchRow[]>;
+  /** Reserva atômica do envio dos nomes. true = quem chamou deve enviar. */
+  claimNamesSent(id: string, at: Date): Promise<boolean>;
+  /** Desfaz a reserva (envio falhou) para a próxima rodada tentar de novo. */
+  releaseNamesSent(id: string): Promise<void>;
+  /** Cancela o match e reabre a dúvida ('aberta'). false se já estava cancelado ou não existe. */
+  cancelMatch(seq: number, at: Date): Promise<boolean>;
+}
+
 export interface PendingChoiceOption {
   id: string;
   title: string;

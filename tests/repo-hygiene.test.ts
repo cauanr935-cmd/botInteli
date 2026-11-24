@@ -43,7 +43,7 @@ describe("higiene do repositório", () => {
 
   it("C0.6 nenhum segredo literal no código", () => {
     const re = /(EAA[A-Za-z0-9]{30,}|eyJ[A-Za-z0-9_-]{30,}\.|sk-[A-Za-z0-9]{20,})/;
-    for (const f of walk(root).filter((p) => /\.(ts|toml|json|md|example)$/.test(p) && !p.endsWith("package-lock.json"))) {
+    for (const f of walk(root).filter((p) => /\.(ts|toml|json|md|example)$/.test(p) && !p.endsWith("package-lock.json") && !/Design Conversacional|Estratégia De Mascotes/.test(p))) { // estudos de referência (imagens em base64)
       expect(readFileSync(f, "utf8"), f).not.toMatch(re);
     }
   });

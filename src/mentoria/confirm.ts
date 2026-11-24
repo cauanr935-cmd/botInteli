@@ -40,7 +40,7 @@ export function confirmationReply(p: PendingConfirmation) {
   ]);
 }
 
-async function countersFor(waId: string, deps: ConfirmDeps): Promise<Counters> {
+export async function countersFor(waId: string, deps: ConfirmDeps): Promise<Counters> {
   const now = deps.now();
   const sent = await deps.repo.listOutboundSince(await hashWaId(waId), new Date(now.getTime() - DAY_MS));
   return {

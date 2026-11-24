@@ -9,6 +9,10 @@ export const SYNONYMS: Record<Intent, string[]> = {
   greeting: [
     "oi", "ola", "olá", "opa", "e ai", "e aí", "eae", "bom dia", "boa tarde", "boa noite",
     "hey", "hello", "inicio", "início", "começar", "comecar",
+    // "tá por aí?", "alô", "tem alguém?": quem volta a puxar assunto sem dizer o que quer.
+    "alo", "alô", "ei", "eai", "iae", "hi", "oie", "fala", "fala aí", "salve", "tudo bem", "td bem", "tudo bom", "como vai", "como vai você",
+    "tá aí", "ta ai", "tá por aí", "ta por ai", "tá on", "ta on", "tem alguém", "tem alguem", "tem alguém aí", "tem alguem ai", "alguém aí", "alguem ai",
+    "cadê você", "cade voce", "voltei", "to aqui", "tô aqui", "bom dia a todos", "boa tarde a todos",
   ],
   yes: ["sim", "s", "ok", "aceito", "concordo", "claro", "pode", "👍"],
   no: ["nao", "não", "n", "recuso", "👎"],

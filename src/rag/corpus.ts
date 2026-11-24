@@ -124,6 +124,7 @@ const WHY: [RegExp, string][] = [
   [/^REG_FIELD_full_name$/, "Pedimos o seu nome completo para identificar você, conectar mentores e mentorados e, depois, validar as horas complementares na sua instituição."],
   [/^REG_FIELD_class_name$/, "A turma ajuda a identificar você na instituição e a conectar quem está em momentos diferentes do curso, como mentor e mentorado."],
   [/^REG_NAME_CONFIRM$/, "Confirmamos o nome para ter certeza de que está certo: ele aparece nos registros usados para validar as horas complementares."],
+  [/^REG_AGE$/, "A idade só serve para saber se o Be My Mentor é para você (de 17 a 25 anos). Ela não fica guardada."],
   [/^REG_PROFILE_AUDIO$/, "As curiosidades (como time e hobbies) ajudam a combinar pessoas com afinidades, para a conversa da mentoria fluir melhor."],
   [/^PROFILE_ROLE$/, "Para saber se você quer ajudar (mentor), receber ajuda (mentorado) ou os dois, e mostrar só as opções certas para você."],
   [/^MENTOR_CATEGORIES(_BOTH)?$/, "Para conectar você com quem precisa de ajuda justamente nas áreas em que você topa ajudar."],

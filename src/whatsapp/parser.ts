@@ -61,6 +61,16 @@ function contactsFromVcards(vcards: unknown[]): { waId?: string; phone?: string 
   return out;
 }
 
+/** URL https do arquivo no armazenamento S3 da Evolution (`data.message.mediaUrl` ou `data.mediaUrl`); só https. */
+function mediaUrlOf(data: Obj, media: Obj): string | undefined {
+  const raw = str(media.mediaUrl) ?? str((data.message as Obj | undefined)?.mediaUrl) ?? str(data.mediaUrl);
+  return raw && /^https:\/\//i.test(raw) && raw.length <= 2048 ? raw : undefined;
+}
+function sizeOf(media: Obj): number | undefined {
+  const n = ts(media.fileLength);
+  return n !== undefined ? n : undefined;
+}
+
 function parseMessage(key: Obj, data: Obj, m: Obj): IncomingMessage | null {
   const wamid = str(key.id);
   const from = phoneFromKey(key);
@@ -109,14 +119,24 @@ function parseMessage(key: Obj, data: Obj, m: Obj): IncomingMessage | null {
   if (isObj(m.audioMessage)) {
     // O id da mídia é o próprio id da mensagem: o download é feito pelo cliente de mídia (evolutionClient.ts).
     const mime = str(m.audioMessage.mimetype);
-    return { ...base, type: "audio", mediaId: wamid, ...(mime ? { mimeType: mime } : {}), voice: m.audioMessage.ptt === true };
+    const url = mediaUrlOf(data, m.audioMessage), size = sizeOf(m.audioMessage);
+    return { ...base, type: "audio", mediaId: wamid, ...(mime ? { mimeType: mime } : {}), voice: m.audioMessage.ptt === true, ...(url ? { mediaUrl: url } : {}), ...(size ? { fileSize: size } : {}) };
+  }
+  if (isObj(m.videoMessage) && m.videoMessage.gifPlayback !== true) {
+    // Vídeo (.mp4) enviado como vídeo: vale como a gravação (a faixa de áudio é o que importa). Tipo desconhecido = vídeo comum: silêncio.
+    const mime = str(m.videoMessage.mimetype);
+    const audioMime = mime ? resolveAudioMime(mime) : null;
+    const url = mediaUrlOf(data, m.videoMessage), size = sizeOf(m.videoMessage);
+    if (audioMime) return { ...base, type: "audio", mediaId: wamid, mimeType: audioMime, voice: false, ...(url ? { mediaUrl: url } : {}), ...(size ? { fileSize: size } : {}) };
+    return unsupported;
   }
   if (isObj(m.documentMessage)) {
     const mime = str(m.documentMessage.mimetype);
     const filename = str(m.documentMessage.fileName);
     // Arquivo de áudio gravado antes e anexado como "Documento": vale como áudio (só é guardado; a análise é externa).
     const audioMime = resolveAudioMime(mime, filename);
-    if (audioMime) return { ...base, type: "audio", mediaId: wamid, mimeType: audioMime, voice: false };
+    const url = mediaUrlOf(data, m.documentMessage), size = sizeOf(m.documentMessage);
+    if (audioMime) return { ...base, type: "audio", mediaId: wamid, mimeType: audioMime, voice: false, ...(url ? { mediaUrl: url } : {}), ...(size ? { fileSize: size } : {}) };
     return { ...base, type: "document", mediaId: wamid, ...(mime ? { mimeType: mime } : {}), ...(filename ? { filename } : {}) };
   }
   if (isObj(m.contactMessage) || isObj(m.contactsArrayMessage)) {

@@ -20,13 +20,13 @@ export interface EvolutionConfig {
 }
 
 export type TransportResult =
-  | { ok: true; messageId: string | null; /** Opções a guardar para traduzir a resposta numérica; null = apagar. */ pending: PendingChoiceOption[] | null }
+  | { ok: true; messageId: string | null; /** Opções a guardar para traduzir a resposta numérica; null = apagar. */ pending?: PendingChoiceOption[] | null }
   | { ok: false; code: string; httpStatus?: number; detail?: string };
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
-interface Planned { path: string; body: Obj; pending: PendingChoiceOption[] | null }
+interface Planned { path: string; body: Obj; pending?: PendingChoiceOption[] | null }
 
 /** Decide endpoint e corpo. null = tipo que a Evolution/Baileys não entrega (ex.: template, Flow). */
 function plan(message: OutboundMessage, evo: EvolutionConfig): Planned | null {
@@ -34,6 +34,12 @@ function plan(message: OutboundMessage, evo: EvolutionConfig): Planned | null {
   if (message.type === "text") {
     const body = isObj(message.text) && typeof message.text.body === "string" ? message.text.body : null;
     return body === null ? null : { path: "sendText", body: { number: to, text: body }, pending: null };
+  }
+  if (message.type === "sticker") {
+    // POST /message/sendSticker/{instância} com `{ number, sticker }` (URL ou base64 de um .webp). NÃO verificado em instância real.
+    return typeof message.sticker === "string" && message.sticker !== ""
+      ? { path: "sendSticker", body: { number: to, sticker: message.sticker } } // não mexe nas opções numeradas do menu
+      : null;
   }
   if (message.type !== "interactive") return null;
   const shape = describeInteractive(message.interactive);
@@ -83,12 +89,46 @@ export async function sendViaEvolution(
   }
   const json = (await res.json().catch(() => null)) as { key?: { id?: unknown } } | null;
   const id = json?.key?.id;
-  return { ok: true, messageId: typeof id === "string" ? id : null, pending: p.pending };
+  return { ok: true, messageId: typeof id === "string" ? id : null, ...(p.pending !== undefined ? { pending: p.pending } : {}) };
+}
+
+/**
+ * Mensagens recebidas há pouco, direto da Evolution (POST /chat/findMessages/{instância}), para responder o que ficou sem
+ * resposta quando o Worker, a internet ou a VM caíram. Devolve no MESMO formato do webhook `messages.upsert`, para o parser
+ * e o motor tratarem igual. Nunca lança: falha vira lista vazia. Formato NÃO verificado em instância real (PENDENCIAS_HUMANAS).
+ */
+export async function fetchRecentInbound(
+  evo: EvolutionConfig, sinceSec: number, limit = 100, fetchImpl?: typeof fetch,
+): Promise<unknown> {
+  const f = fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  try {
+    const res = await f(`${evo.url}/chat/findMessages/${encodeURIComponent(evo.instance)}`, {
+      method: "POST",
+      headers: { apikey: evo.apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ where: { key: { fromMe: false }, messageTimestamp: { gte: sinceSec } }, page: 1, offset: limit }),
+    });
+    if (!res.ok) return { event: "messages.upsert", data: [] };
+    const j = (await res.json()) as unknown;
+    // v2: { messages: { records: [...] } }; versões antigas: lista direta ou { records } / { messages: [...] }.
+    const pick = (v: unknown): unknown[] | null => (Array.isArray(v) ? v : null);
+    const o = isObj(j) ? j : {};
+    const m = isObj(o.messages) ? o.messages : {};
+    const records = pick(j) ?? pick(o.records) ?? pick(o.messages) ?? pick(m.records) ?? [];
+    const recent = records.filter((r) => {
+      const t = isObj(r) ? Number(isObj(r.messageTimestamp) ? r.messageTimestamp.low : r.messageTimestamp) : NaN;
+      return !Number.isFinite(t) || t >= sinceSec;
+    });
+    return { event: "messages.upsert", data: recent };
+  } catch {
+    return { event: "messages.upsert", data: [] };
+  }
 }
 
 /** ---- Mídia recebida ---- */
 export interface EvolutionMediaOptions extends EvolutionConfig {
   fetchImpl?: typeof fetch;
+  /** Hosts permitidos para `openStream` (ex.: o domínio público do bucket R2 onde a Evolution grava). Vazio = sem stream. */
+  mediaHosts?: readonly string[];
 }
 
 const MEDIA_SCHEME = "evolution-media:";
@@ -100,7 +140,22 @@ const MEDIA_SCHEME = "evolution-media:";
  */
 export function createMediaClient(o: EvolutionMediaOptions): MediaClient {
   const f = o.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  const hosts = (o.mediaHosts ?? []).map((h) => h.trim().toLowerCase()).filter(Boolean);
   return {
+    async openStream(url) {
+      let u: URL;
+      try { u = new URL(url); } catch { return { ok: false }; }
+      // Anti-SSRF: só https e só hosts liberados (a URL vem do webhook).
+      if (u.protocol !== "https:" || u.username || u.password || !hosts.includes(u.hostname.toLowerCase())) return { ok: false };
+      try {
+        const res = await f(u.toString(), { redirect: "error" });
+        if (!res.ok || !res.body) return { ok: false };
+        const len = Number(res.headers.get("content-length"));
+        return { ok: true, body: res.body, ...(Number.isFinite(len) && len > 0 ? { size: len } : {}) };
+      } catch {
+        return { ok: false };
+      }
+    },
     async getInfo(mediaId): Promise<MediaInfo> {
       if (!/^[A-Za-z0-9_-]{1,100}$/.test(mediaId)) throw new Error("media_id inválido");
       return { url: MEDIA_SCHEME + mediaId };

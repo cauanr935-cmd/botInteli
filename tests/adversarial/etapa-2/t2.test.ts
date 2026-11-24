@@ -2,6 +2,7 @@ import { it, expect } from "vitest";
 import { MemoryRepo } from "../../../src/db/memory-repo";
 import { sendGuarded } from "../../../src/whatsapp/client";
 import { processEvents } from "../../../src/webhook/handler";
+import { hashWaId } from "../../../src/lib/hash";
 
 const logger = { log: () => undefined };
 function ctx(repo: MemoryRepo, f: typeof fetch) {
@@ -22,10 +23,17 @@ it("falha da Evolution não devolve vaga: 2 falhas esgotam o teto diário de 2",
   expect((await sendGuarded(m, ctx(repo, f))).status).toBe("blocked_budget");
   expect(calls).toBe(2);
 });
-it("mensagem duplicada que falha não é liberada (sem resposta dupla)", async () => {
+it("mensagem que falha DEPOIS de responder não é liberada (sem resposta dupla)", async () => {
   const repo = new MemoryRepo(); let n = 0;
   const ev = { type: "text", wamid: "w9", from: "55", timestamp: 1, text: "oi" } as never;
-  const deps = { webhookToken: "s", repo, logger, onEvent: async () => { n++; throw new Error("x"); } };
+  const deps = { webhookToken: "s", repo, logger, onEvent: async () => { n++; await repo.insertOutboundLog({ waIdHash: await hashWaId("55"), messageType: "text", wamid: "o1", reservedAt: new Date(Date.now() + 1000), sentOk: true, errorCode: null }); throw new Error("x"); } };
   await processEvents([ev], deps as never); await processEvents([ev], deps as never);
   expect(n).toBe(1);
+});
+it("mensagem que falha SEM responder é liberada uma única vez (a recuperação responde), nunca em laço", async () => {
+  const repo = new MemoryRepo(); let n = 0;
+  const ev = { type: "text", wamid: "w10", from: "55", timestamp: 1, text: "oi" } as never;
+  const deps = { webhookToken: "s", repo, logger, onEvent: async () => { n++; throw new Error("x"); } };
+  await processEvents([ev], deps as never); await processEvents([ev], deps as never); await processEvents([ev], deps as never);
+  expect(n).toBe(2);
 });

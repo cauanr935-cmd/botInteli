@@ -9,8 +9,13 @@ export interface LegalTopic {
   id: string;
   /** Padrões sobre o texto normalizado (minúsculas, sem acento, sem pontuação). */
   match: RegExp[];
+  /** Se houver, a pergunta também precisa falar de dados/privacidade (evita que "vender peças" ou "prazo do MVP" caiam aqui). */
+  needs?: RegExp;
   answer: string;
 }
+
+/** Contexto de dados pessoais/privacidade: verbos soltos como "vender", "guardar", "prazo" só valem junto disto. */
+const DATA_CONTEXT = /\b(dados?|audios?|cadastro|privacidade|lgpd|consentimento|(minhas|meus|suas|seus|nossas|nossos) (informac\w+|mensagens?|audios?))\b/;
 
 const contact = `pelo Contato do bot ou pelo WhatsApp ${CONTACT_WHATSAPP}`;
 
@@ -26,7 +31,7 @@ export const LEGAL_TOPICS: readonly LegalTopic[] = [
     id: "apagar",
     match: [/\b(apag\w+|exclu\w+|delet\w+|remov\w+|elimin\w+|esquec\w+)\b.*\b(dados?|cadastro|conta|audios?|informac\w+)\b/, /\b(dados?|cadastro|audios?)\b.*\b(apag\w+|exclu\w+|delet\w+|remov\w+|elimin\w+)\b/, /\bdireito (ao )?esquecimento\b/],
     answer:
-      `Você pode pedir a eliminação dos seus dados quando quiser, de graça, ${contact}. Respondemos em até 15 dias. Só guardamos por mais tempo o que a lei exigir, e o que já foi registrado em blockchain não pode ser alterado (por isso lá vão apenas ids e hashes, nunca nome, telefone ou o texto da conversa).`,
+      `Você pode pedir a eliminação dos seus dados quando quiser, de graça, ${contact}. Respondemos em até 15 dias. Só guardamos por mais tempo o que a lei exigir, e o livro de registro e os carimbos de tempo não podem ser alterados (por isso lá vão apenas códigos e hashes, nunca nome, telefone ou o texto da conversa).`,
   },
   {
     id: "direitos",
@@ -36,12 +41,14 @@ export const LEGAL_TOPICS: readonly LegalTopic[] = [
   },
   {
     id: "compartilhamento",
+    needs: DATA_CONTEXT,
     match: [/\b(compartilh\w+|vend\w+|comerciali\w+|repass\w+|terceiros?|quem (ve|tem acesso|recebe|le|ouve)|quem acessa)\b/, /\bpara quem\b.*\b(dados?|audios?|informac\w+)\b/],
     answer:
-      "Não vendemos nem comercializamos os seus dados, e não os compartilhamos para outras finalidades. Quem recebe o necessário: o seu mentor ou mentorado (nome, turma, dúvida e horários), a sua instituição de ensino (os registros para validar as horas complementares) e os prestadores que fazem o bot funcionar (WhatsApp/Meta, hospedagem, banco de dados, IA, transcrição e blockchain), sempre sob nossas instruções. Autoridades só se a lei mandar.",
+      "Não vendemos nem comercializamos os seus dados, e não os compartilhamos para outras finalidades. Quem recebe o necessário: o seu mentor ou mentorado (nome, turma, dúvida e horários), a sua instituição de ensino (só o certificado que você decidir levar a ela) e os prestadores que fazem o bot funcionar (WhatsApp/Meta, hospedagem, banco de dados e IA), sempre sob nossas instruções. Autoridades só se a lei mandar.",
   },
   {
     id: "retencao",
+    needs: DATA_CONTEXT,
     match: [/\b(quanto tempo|por quanto tempo|ate quando|prazo|guard\w+|armazen\w+|retenc\w+)\b.*\b(dados?|audios?|cadastro|informac\w+|gravac\w+)?\b/],
     answer:
       "Cadastro, áudio de apresentação, dúvidas, materiais e horários: enquanto você usar o serviço e por até 12 meses depois do último contato. Áudios das mentorias, transcrições e registros de validação: até 5 anos, para a validação das horas complementares. Registros técnicos de acesso: 6 meses. Depois disso, eliminamos ou anonimizamos.",
@@ -50,19 +57,20 @@ export const LEGAL_TOPICS: readonly LegalTopic[] = [
     id: "ia",
     match: [/\b(inteligencia artificial|ia|chatgpt|grok|groq|robo|automatic\w+)\b.*\b(dados?|mensagens?|texto|le |leem|ve |veem)\b/, /\b(usa|usam|utiliz\w+) (a )?(ia|inteligencia artificial)\b/, /\binteligencia artificial\b/],
     answer:
-      "Usamos inteligência artificial só para apoiar o atendimento: entender o que você quis dizer, ler seus horários, conferir se um nome parece real e responder perguntas sobre a Be My Mentor. Ela recebe apenas o texto da sua mensagem, sem nome nem telefone, e somente depois do seu aceite. Ela não tira dúvidas acadêmicas.",
+      "Usamos inteligência artificial só para apoiar o atendimento: entender o que você quis dizer, ler seus horários, conferir se um nome parece real e responder perguntas sobre a Be My Mentor. Ela recebe apenas o texto da sua mensagem, sem nome nem telefone, e somente depois do seu aceite. Ela não tira dúvidas acadêmicas. Os provedores são Groq e xAI. Por isso, não escreva dados sensíveis nem de terceiros no texto livre. Temas sensíveis nunca vão para a IA. A transcrição e a análise das gravações das mentorias rodam em equipamento nosso, sem IA de terceiros.",
   },
   {
     id: "exterior",
+    needs: DATA_CONTEXT,
     match: [/\b(exterior|fora do brasil|estados unidos|eua|internacional|servidores?|nuvem)\b/],
     answer:
-      "Alguns prestadores (Meta/WhatsApp, Cloudflare, Supabase e o provedor de IA) podem processar dados fora do Brasil, inclusive nos Estados Unidos. Isso só acontece com o seu consentimento específico, dado ao aceitar os termos, e eles tratam os dados apenas sob nossas instruções.",
+      "Alguns prestadores (WhatsApp/Meta, Cloudflare, Supabase e os provedores de IA) podem processar dados fora do Brasil, inclusive nos Estados Unidos. Isso só acontece com o seu consentimento específico, dado ao aceitar os termos, e eles tratam os dados apenas sob nossas instruções.",
   },
   {
     id: "blockchain",
-    match: [/\bblockchain\b/, /\bimutavel\b/, /\bhash\b/],
+    match: [/\bblockchain\b/, /\bimutavel\b/, /\bhash\b/, /\bcarimbo\b/],
     answer:
-      "Para dar confiança à validação das horas complementares, registramos informações da mentoria em uma blockchain, que não pode ser alterada nem apagada. Por isso lá vão somente informações pseudonimizadas (ids e hashes), nunca nome, telefone ou o texto da transcrição.",
+      "Para dar confiança ao certificado de horas complementares, mantemos um livro de registro e carimbos de tempo públicos, que não podem ser alterados. Por isso lá vão somente informações pseudonimizadas (códigos e hashes), nunca nome, telefone ou o texto da transcrição.",
   },
   {
     id: "quais-dados",
@@ -85,6 +93,6 @@ export const LEGAL_TOPICS: readonly LegalTopic[] = [
 /** Resposta pronta sobre LGPD/dados para a pergunta, ou null se a pergunta não é sobre isso. */
 export function legalAnswer(question: string): { id: string; answer: string } | null {
   const q = normalizeText(question);
-  for (const t of LEGAL_TOPICS) if (t.match.some((re) => re.test(q))) return { id: t.id, answer: t.answer };
+  for (const t of LEGAL_TOPICS) if ((!t.needs || t.needs.test(q)) && t.match.some((re) => re.test(q))) return { id: t.id, answer: t.answer };
   return null;
 }

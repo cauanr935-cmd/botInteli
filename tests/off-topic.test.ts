@@ -13,7 +13,7 @@ describe("assunto fora do escopo: nunca mudo de cara", () => {
     expect(offTopicNotice("vamos falar de futebol", 0)).toBeNull();
     expect(offTopicNotice("vamos falar de futebol", 3, 0)).not.toBe(offTopicNotice("vamos falar de futebol", 3, 1));
     expect(offTopicNotice("vamos falar de futebol", 1)).toMatch(/quiet|na minha|silêncio/i);
-    expect(offTopicNotice("😂😂", 3)).toBeNull(); // sem texto útil: não vale um aviso
+    expect(offTopicNotice("😂😂", 3)).toMatch(/não entendi/i); // sem texto útil: pede para escrever, não fica mudo
   });
 
   it("quem acabou de passar pelo cadastro e manda papo fora do assunto recebe aviso (não silêncio)", async () => {

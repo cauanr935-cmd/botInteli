@@ -8,8 +8,15 @@ compatibility_flags = ["nodejs_compat"]
 [placement]
 mode = "smart"
 
+# Figurinhas do Axo (assets/stickers/*.webp + index.json, gerado por `npm run stickers`). Publicadas junto do Worker.
+[assets]
+directory = "./assets"
+binding = "ASSETS"
+run_worker_first = true
+
 [triggers]
-crons = ["0 6 * * *"]
+# Diário (limpeza, sem envio) + a cada minuto (nomes de mentor/mentorado 5 min antes da mentoria, src/matching/reminder.ts).
+crons = ["0 6 * * *", "* * * * *"]
 
 [[r2_buckets]]
 binding = "AUDIOS"
@@ -19,14 +26,26 @@ bucket_name = "bot-whatsapp-audios"
 # ADMIN_TOKEN) entram via `wrangler secret put`, nunca aqui. EVOLUTION_URL e EVOLUTION_INSTANCE também
 # precisam ser definidos (secret ou aqui).
 [vars]
+EVOLUTION_URL = "https://bunny-fabulous-idaho-thing.trycloudflare.com"
+EVOLUTION_INSTANCE = "bemymentor"
+SUPABASE_URL = "https://iajwvsrnutrtezmkpdph.supabase.co"
+PRIVACY_POLICY_URL = "https://bot-whatsapp.bot-whatsaap-inteli.workers.dev/privacidade"
+
 EVOLUTION_NATIVE_INTERACTIVE = "false"
-# Simulador de chat web (/chat?key=ADMIN_TOKEN). Use "false" para desligar.
 CHAT_SIM_ENABLED = "true"
 TIMEZONE = "America/Sao_Paulo"
-# Anti-flood por dia (0 = desligado). Ligue (ex.: 300) para proteger o número contra banimento.
 ANTI_FLOOD_MAX_PER_DAY = "0"
-MAX_BOT_MSGS_PER_USER_PER_DAY = "40"
-MAX_BOT_MSGS_PER_USER_PER_10MIN = "15"
-TERMS_VERSION = "2026-11"
+MAX_BOT_MSGS_PER_USER_PER_DAY = "200"
+MAX_BOT_MSGS_PER_USER_PER_10MIN = "30"
+TERMS_VERSION = "2026-11-3"
+# ADMIN_WA_IDS (SECRET, não colocar aqui): números E.164 dos admins do matching, separados por vírgula
+# (ex.: "+5511999990000,+5511988887777"). Define com: wrangler secret put ADMIN_WA_IDS. Vazio = ninguém é admin.
+# Guardrail de abertura da rede: ATÉ esta data só dá para se cadastrar; pedir mentoria só para os números de NETWORK_EARLY_ACCESS
+# (SECRET, não colocar aqui: `wrangler secret put NETWORK_EARLY_ACCESS`). Segunda-feira 23/11/2026, 00:00 de Brasília.
+# Depois da data a regra some sozinha; para abrir antes, apague esta linha e faça o deploy.
+NETWORK_OPEN_AT = "2026-11-23T00:00:00-03:00"
 MAX_AUDIO_BYTES = "16000000"
+# Arquivos grandes (ex.: 64 MB): a Evolution grava no R2 (S3) e o Worker copia em stream. Liste o host da URL (MEDIA_URL_HOSTS).
+MAX_AUDIO_STREAM_BYTES = "300000000"
+MEDIA_URL_HOSTS = "6008118315216354fa97b311e0efdb72.r2.cloudflarestorage.com"
 ANALYZER_TIMEOUT_MS = "8000"

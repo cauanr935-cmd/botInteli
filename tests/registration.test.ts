@@ -70,8 +70,8 @@ describe("C4.2 coleta em texto: nome e turma, depois áudio", () => {
     expect(s.sent().at(-1).text.body).toBe(FIELDS[0]!.prompt); // primeira info individual: nome completo
     await s.feed(text("Maria da Silva"));
     expect(s.sent().at(-1).text.body).toBe(FIELDS[1]!.prompt); // turma
-    await s.feed(text("Turma 12"));
-    expect(s.graph).toHaveBeenCalledTimes(4);
+    await s.feed(text("Turma 12")); await s.feed(text("20"));
+    expect(s.graph).toHaveBeenCalledTimes(5);
     const ask = s.sent().at(-1).text.body as string;
     for (const topic of [/nascimento/i, /esporte favorito/i, /time do seu coração/i, /hobbies/i]) expect(ask).toMatch(topic);
     expect((await s.repo.getConversation(WA)).state).toBe("REG_PROFILE_AUDIO");
@@ -88,13 +88,33 @@ describe("C4.2 coleta em texto: nome e turma, depois áudio", () => {
     expect((await s.repo.getConversation(WA)).state).toBe("REG_FIELD_full_name");
     expect((await s.repo.getRegistration(WA)).consentAt).toEqual(NOW);
   });
+  it("curiosidades: só a data de nascimento pede mais informação (nunca 'não entendi') e não avança", async () => {
+    const { isBirthDateOnly } = await import("../src/registration/decide");
+    for (const d of ["12/05/2003", "12 de maio de 2003", "nasci em 12/05/2003", "meu aniversário é 3.4.2002"]) expect(isBirthDateOnly(d), d).toBe(true);
+    for (const d of ["12/05/2003, gosto de música e cozinhar", "gosto de futebol", "nasci em 2003 e amo cozinhar"]) expect(isBirthDateOnly(d), d).toBe(false);
+    for (const date of ["12/05/2003", "nasci em 12 de maio de 2003"]) {
+      const s = setup();
+      for (const m of [text("oi"), button("consent_yes"), text("Maria da Silva"), text("Turma 12"), text("20")]) await s.feed(m);
+      await s.feed(text(date));
+      expect(s.sent().at(-1).text.body).toMatch(/anotei sua data de nascimento[\s\S]*me conta um pouco mais/i);
+      expect(s.sent().at(-1).text.body).not.toMatch(/não entendi/i);
+      expect((await s.repo.getConversation(WA)).state).toBe("REG_PROFILE_AUDIO");
+      await s.feed(text("12/05/2003, gosto de escutar música e cozinhar"));
+      expect((await s.repo.getConversation(WA)).state).toBe("PROFILE_ROLE");
+    }
+    const s = setup();
+    for (const m of [text("oi"), button("consent_yes"), text("Maria da Silva"), text("Turma 12"), text("20"), text("12/05/2003"), text("gosto de escutar música e cozinhar")]) await s.feed(m);
+    const about = (await s.repo.getRegistration(WA)).profileAbout;
+    expect(about).toContain("12/05/2003"); // as duas partes ficam juntas
+    expect(about).toContain("escutar música e cozinhar");
+  });
   it("C4.2 curiosidades: texto curto recebe a dica exata, depois aviso descontraído; texto longo é aceito", async () => {
     const s = setup();
-    for (const m of [text("oi"), button("consent_yes"), text("Maria da Silva"), text("Turma 12")]) await s.feed(m);
+    for (const m of [text("oi"), button("consent_yes"), text("Maria da Silva"), text("Turma 12"), text("20")]) await s.feed(m);
     const n = s.graph.mock.calls.length;
     await s.feed(text("futebol"));
     expect(s.graph.mock.calls.length).toBe(n + 1);
-    expect(s.sent().at(-1).text.body).toBe("Conte as suas curiosidades (data de nascimento, esporte, time e hobbies) em um áudio ou em um texto de pelo menos 10 caracteres.");
+    expect(s.sent().at(-1).text.body).toMatch(/^Me conta um pouco mais sobre você[\s\S]*pelo menos 10 caracteres\.$/);
     await s.feed(text("time"));
     expect(s.graph.mock.calls.length).toBe(n + 2); // dica exata + aviso descontraído
     expect((await s.repo.getConversation(WA)).state).toBe("REG_PROFILE_AUDIO");
@@ -105,15 +125,16 @@ describe("C4.2 coleta em texto: nome e turma, depois áudio", () => {
 });
 
 describe("C4.3 dado inválido", () => {
-  it("C4.3 nome inválido não é salvo; 1 dica e depois silêncio", async () => {
+  it("C4.3 nome inválido não é salvo; 1 dica e depois um aviso de não entendi", async () => {
     const s = setup();
     await s.feed(text("oi"));
     await s.feed(button("consent_yes"));
     const n = s.graph.mock.calls.length;
     await s.feed(text("oi"));
     await s.feed(text("x"));
-    expect(s.graph.mock.calls.length).toBe(n + 1);
-    expect(s.sent().at(-1).text.body).toBe(FIELDS[0]!.hint);
+    expect(s.graph.mock.calls.length).toBe(n + 2); // "oi" gera a dica; "x" gera o aviso de que não entendeu
+    expect(s.sent().at(-2).text.body).toBe(FIELDS[0]!.hint);
+    expect(s.sent().at(-1).text.body).toMatch(/entend|compreend|saquei|peguei/i);
     expect((await s.repo.getRegistration(WA)).values).toEqual({});
   });
   it("C4.3 validadores: nome curto/saudação/longo e turma vazia/comando são recusados", () => {
@@ -131,7 +152,7 @@ describe("C4.4 consentimento antes de dados", () => {
   it("C4.4 sem aceite: nada além do identificador técnico é salvo", async () => {
     const s = setup();
     await s.feed(text("oi"));
-    for (const t of ["Maria da Silva", "Turma 12", "não", "Recife"]) await s.feed(text(t));
+    for (const t of ["Maria da Silva", "Turma 12", "20", "não", "Recife"]) await s.feed(text(t));
     expect(await s.repo.getRegistration(WA)).toEqual({ consentAt: null, termsVersion: null, registeredAt: null, values: {} });
     expect((await s.repo.getConversation(WA)).state).toBe("REG_CONSENT");
   });
@@ -182,7 +203,7 @@ describe("C4.7 já cadastrado", () => {
     await s.feed(text("oi"));
     await s.feed(button("consent_yes"));
     await s.feed(text("Maria da Silva"));
-    await s.feed(text("Turma 12"));
+    await s.feed(text("Turma 12")); await s.feed(text("20"));
     await s.repo.saveRegistration(WA, { registeredAt: NOW }); // cadastro concluído (papel já escolhido)
     s.repo.conversations.clear(); // nova sessão
     const before = s.graph.mock.calls.length;
@@ -225,7 +246,7 @@ describe("textos e extras", () => {
     await s.feed(text("oi"));
     await s.feed(button("consent_yes"));
     await s.feed(text("Maria da Silva"));
-    await s.feed(text("Turma 12"));
+    await s.feed(text("Turma 12")); await s.feed(text("20"));
     await s.feed(text("sair"));
     const before = s.graph.mock.calls.length;
     await s.feed(text("voltar"));

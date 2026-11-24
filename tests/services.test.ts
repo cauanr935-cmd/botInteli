@@ -238,7 +238,7 @@ describe("C5.5 fallback de textos e cache", () => {
     const s = setup();
     await s.toMenu();
     await s.feed(text("blabla")); // dica do menu
-    expect(s.sent()[0].text.body).toMatch(/Escolha um serviço/);
+    expect(s.sent()[0].text.body).toMatch(/Digite o número/);
   });
   it("C5.5 texto do banco substitui o fallback; vazio ou grande demais é ignorado", async () => {
     const c = makeContent([], { a: "do banco", b: "  ", c: "x".repeat(2000) });
@@ -262,7 +262,7 @@ describe("C5.5 fallback de textos e cache", () => {
     await s.toMenu();
     await s.feed(text("menu"));
     expect(s.graph).toHaveBeenCalledTimes(1);
-    expect(s.sent()[0].interactive.action.sections[0].rows).toHaveLength(3); // DEFAULT_SERVICES
+    expect(s.sent()[0].interactive.action.sections[0].rows).toHaveLength(4); // DEFAULT_SERVICES
     expect(s.logs).toContainEqual({ level: "warn", event: "content_load_failed" });
   });
   it("C5.5 cache com TTL: 1 consulta por janela, nova consulta depois do TTL", async () => {
@@ -296,9 +296,9 @@ describe("C5 banco: migração 0005 e SupabaseRepo", () => {
     db = new PGlite();
     for (const f of readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) await db.exec(readFileSync(join(dir, f), "utf8"));
   }, 60_000);
-  it("C5.5 seeds: 3 serviços ativos (mentoria, horários e contato; Análise de áudio desativada na 0011); RLS ligado", async () => {
+  it("C5.5 seeds: 4 serviços ativos (mentoria, nova mentoria, horários e contato; Análise de áudio desativada na 0011); RLS ligado", async () => {
     const r = await db.query<{ requires_audio: boolean }>("select requires_audio from services where active order by sort_order");
-    expect(r.rows).toHaveLength(3);
+    expect(r.rows).toHaveLength(4);
     expect(r.rows.some((x) => x.requires_audio)).toBe(true);
     expect(r.rows.some((x) => !x.requires_audio)).toBe(true);
     const rls = await db.query<{ relrowsecurity: boolean }>("select relrowsecurity from pg_class where relname in ('services','canned_responses')");
@@ -312,7 +312,7 @@ describe("C5 banco: migração 0005 e SupabaseRepo", () => {
   it("C5 reaplicar a migração 0005 é inofensivo (seeds idempotentes)", async () => {
     await db.exec(readFileSync(join(dir, "0005_services.sql"), "utf8"));
     const r = await db.query<{ n: number }>("select count(*)::int as n from services");
-    expect(r.rows[0]!.n).toBe(4);
+    expect(r.rows[0]!.n).toBe(5);
   });
   it("C5 SupabaseRepo lê serviços ativos e respostas prontas pela REST (mock)", async () => {
     const calls: string[] = [];

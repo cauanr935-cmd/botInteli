@@ -10,6 +10,8 @@ import { FIELDS } from "./fields";
 import { returningChoiceReply, roleReply } from "../profile/decide";
 import { consentWelcomeReply, fieldPromptReply, nameConfirmReply, profileAudioPrompt } from "./replies";
 import { fallbackContent, type Content } from "../services/content";
+import { ageVerdict, MAX_AGE, MIN_AGE, parseAge } from "./age";
+import { looksHeavyName, looksStrangeName, readNameAnswer } from "./strange-name";
 import { CONSENT_BUTTON_ID, NAME_NO_ID, NAME_YES_ID, REG_TEXTS } from "./texts";
 
 export interface RegistrationContext {
@@ -47,12 +49,26 @@ export function validAbout(raw: string): string | null {
   return v;
 }
 
+/** Só a data de nascimento ("12/05/2003", "nasci em 12 de maio de 2003"): é uma resposta esperada, mas falta contar mais. */
+const DATE_WORDS = new Set(["nasci", "em", "dia", "de", "do", "no", "meu", "minha", "aniversario", "data", "nascimento", "e", "eh", "a", "o", "dos", "da",
+  "janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+  "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]);
+/** Prefixo da data de nascimento guardada sozinha; o motor junta o resto das curiosidades a ela. */
+export const BIRTH_PREFIX = "Data de nascimento: ";
+export function isBirthDateOnly(raw: string): boolean {
+  const v = raw.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9/.\-\s]/g, " ");
+  const left = v.split(/\s+/).filter((w) => w !== "" && !DATE_WORDS.has(w));
+  return /\d{2,4}/.test(v) && (v.match(/\d/g) ?? []).length >= 4 && left.every((w) => /^[\d/.-]+$/.test(w));
+}
+
+/** Marca em lastServiceId: a pessoa disse que o nome estava errado e já corrigiu uma vez. */
+const NAME_RETRY = "name_retry";
 export const fieldState = (key: string): State => `REG_FIELD_${key}`;
 const fieldIndex = (state: string): number =>
   state.startsWith("REG_FIELD_") ? FIELDS.findIndex((f) => f.key === state.slice("REG_FIELD_".length)) : -1;
 
 export function isRegistrationState(state: string): boolean {
-  return state === "AWAIT_REGISTRATION" || state === "REG_CONSENT" || state === "REG_NAME_CONFIRM" || state === "REG_PROFILE_AUDIO" || state.startsWith("REG_FIELD_");
+  return state === "AWAIT_REGISTRATION" || state === "REG_CONSENT" || state === "REG_NAME_CONFIRM" || state === "REG_AGE" || state === "REG_PROFILE_AUDIO" || state.startsWith("REG_FIELD_");
 }
 
 /** Resultado da leitura do formulário (nfm_reply). */
@@ -85,6 +101,7 @@ export function registrationPrompt(state: State, ctx: RegistrationContext): Repl
   const c = ctx.content ?? fallbackContent;
   if (state === "AWAIT_REGISTRATION" || state === "REG_CONSENT") return consentWelcomeReply(ctx.privacyUrl, c);
   if (state === "REG_NAME_CONFIRM") return nameConfirmReply(null, c);
+  if (state === "REG_AGE") return { type: "text", text: { body: REG_TEXTS.askAge } };
   if (state === "REG_PROFILE_AUDIO") return profileAudioPrompt();
   const i = fieldIndex(state);
   return i >= 0 ? fieldPromptReply(i) : undefined;
@@ -144,8 +161,9 @@ export function decideRegistration(
 
   // ---- confirmação do nome (suspeito de ser falso): Sim segue; Não pede o nome de novo ----
   if (user.state === "REG_NAME_CONFIRM") {
-    const yes = (input.type === "button_reply" && input.id === NAME_YES_ID) || (input.type === "text" && intents.has("yes"));
-    const no = (input.type === "button_reply" && input.id === NAME_NO_ID) || (input.type === "text" && intents.has("no"));
+    const said = input.type === "text" ? readNameAnswer(input.body) : null;
+    const yes = (input.type === "button_reply" && input.id === NAME_YES_ID) || (input.type === "text" && (intents.has("yes") || said === "yes"));
+    const no = (input.type === "button_reply" && input.id === NAME_NO_ID) || (input.type === "text" && (intents.has("no") || said === "no"));
     const nameIdx = FIELDS.findIndex((f) => f.key === "full_name");
     if (yes) {
       const next = FIELDS[nameIdx + 1];
@@ -153,19 +171,42 @@ export function decideRegistration(
       return finish(user, moveTo(user, fieldState(next.key), now), [fieldPromptReply(nameIdx + 1)], counters, "reply");
     }
     if (no) {
-      return finish(
+      // Marca a segunda tentativa: se o nome vier estranho de novo, o fluxo segue sem perguntar outra vez.
+      const d = finish(
         user, moveTo(user, fieldState("full_name"), now),
         [{ type: "text", text: { body: c.text("askNameAgain", REG_TEXTS.askNameAgain) } }], counters, "reply",
       );
+      return d.outcome === "limited" ? d : { ...d, nextState: { ...d.nextState, lastServiceId: NAME_RETRY } };
     }
     if (input.type !== "text") return silent();
     if (intents.has("greeting")) return silent();
     return hintOnce(user, hintText("hintNameConfirm"), counters);
   }
 
+  // ---- idade (17 a 25): não é gravada; só decide se o cadastro segue ----
+  if (user.state === "REG_AGE") {
+    if (input.type !== "text") return silent();
+    if (intents.has("greeting")) return silent();
+    const age = parseAge(input.body, now);
+    if (age === null) return hintOnce(user, hintText("hintAge"), counters);
+    const verdict = ageVerdict(age);
+    if (verdict === "ok") {
+      return finish(user, moveTo(user, "REG_PROFILE_AUDIO", now), [profileAudioPrompt()], counters, "reply");
+    }
+    const body = verdict === "liar26" ? hintText("ageLiar26")
+      : (verdict === "young" ? hintText("ageYoung") : hintText("ageOld")).replace("{min}", String(MIN_AGE)).replace("{max}", String(MAX_AGE));
+    return finish(user, { ...user }, [{ type: "text", text: { body } }], counters, "reply");
+  }
+
   // ---- curiosidades: áudio OU texto (quem prefere escrever). Texto curto ou inválido recebe 1 dica (R2) ----
   if (user.state === "REG_PROFILE_AUDIO") {
     if (input.type === "text") {
+      // Só a data de nascimento: agradece e pede o resto (resposta esperada, então não é "não entendi" nem fica sem retorno).
+      // A data fica guardada e a próxima mensagem se junta a ela (ver "about" no motor).
+      if (isBirthDateOnly(input.body)) {
+        return withEffect(finish(user, { ...user }, [{ type: "text", text: { body: hintText("aboutNeedMore") } }], counters, "reply"),
+          { kind: "about", text: `${BIRTH_PREFIX}${input.body.replace(/\s+/g, " ").trim().slice(0, 100)}` });
+      }
       const about = validAbout(input.body);
       if (about === null) return hintOnce(user, hintText("hintProfileAudio"), counters);
       return withEffect(
@@ -187,9 +228,14 @@ export function decideRegistration(
   if (input.type !== "text") return silent();
   const value = field.validate(input.body);
   if (value === null) return hintOnce(user, field.hint, counters);
+  // Nome malicioso ou de peso (crime, ódio, ditadores): não grava e pede o nome de verdade.
+  if (field.key === "full_name" && looksHeavyName(value)) {
+    return finish(user, { ...user }, [{ type: "text", text: { body: hintText("nameBlocked") } }], counters, "reply");
+  }
   // Nome com alta chance de ser falso (a IA achou, ou é uma palavra só): pergunta se é mesmo o nome. O valor já fica
   // gravado; "Não" pede o nome de novo (e regrava), "Sim" segue.
-  if (field.key === "full_name" && (ctx.nameCheck === "suspicious" || value.split(" ").length < 2)) {
+  const retry = user.lastServiceId === NAME_RETRY;
+  if (field.key === "full_name" && !retry && (ctx.nameCheck === "suspicious" || value.split(" ").length < 2 || looksStrangeName(value))) {
     return withEffect(
       finish(user, moveTo(user, "REG_NAME_CONFIRM", now), [nameConfirmReply(value, c)], counters, "reply"),
       { kind: "field", key: field.key, value },
@@ -203,7 +249,7 @@ export function decideRegistration(
     );
   }
   return withEffect(
-    finish(user, moveTo(user, "REG_PROFILE_AUDIO", now), [profileAudioPrompt()], counters, "reply"),
+    finish(user, moveTo(user, "REG_AGE", now), [{ type: "text", text: { body: hintText("askAge") } }], counters, "reply"),
     { kind: "field", key: field.key, value },
   );
 }

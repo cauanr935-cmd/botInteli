@@ -12,6 +12,7 @@ import { sendGuarded, type MediaClient, type OutboundMessage, type SendContext }
 import type { IntentAgent } from "../ai/agent";
 import type { AudioEvent, DocumentEvent } from "../whatsapp/types";
 import { processMaterial } from "../materials/pipeline";
+import type { StickerPicker } from "../whatsapp/stickers";
 import type { EventHandler } from "./handler";
 
 export interface EventHandlerPorts {
@@ -28,6 +29,8 @@ export interface EventHandlerPorts {
   agent?: IntentAgent;
   /** Contexto recente da conversa para a IA (só canais que guardam o histórico; o webhook do WhatsApp não tem). */
   recentContext?: readonly string[];
+  /** Figurinhas de resposta (binding ASSETS). Sem isto, figurinha e imagem seguem sem resposta. */
+  stickers?: StickerPicker;
 }
 
 export function createEventHandler(cfg: Config, p: EventHandlerPorts): EventHandler {
@@ -47,7 +50,7 @@ export function createEventHandler(cfg: Config, p: EventHandlerPorts): EventHand
           process: (m: AudioEvent, hintAlreadySent: boolean, purpose?: "mentoria" | "profile") =>
             processAudio(m, hintAlreadySent, {
               repo, logger, send, content, media: a.media, store: a.store, analyzer: a.analyzer,
-              maxAudioBytes: cfg.maxAudioBytes, maxPerDay: cfg.maxBotMsgsPerUserPerDay,
+              maxAudioBytes: cfg.maxAudioBytes, maxAudioStreamBytes: cfg.maxAudioStreamBytes, maxPerDay: cfg.maxBotMsgsPerUserPerDay,
               maxPer10Min: cfg.maxBotMsgsPerUserPer10Min, timezone: cfg.timezone,
               ...(p.now ? { now: p.now } : {}),
             }, purpose),
@@ -63,10 +66,12 @@ export function createEventHandler(cfg: Config, p: EventHandlerPorts): EventHand
         }
       : undefined;
     await handleIncomingMessage(ev, {
-      ...(audio ? { audio } : {}), ...(material ? { material } : {}), ...(p.agent ? { agent: p.agent } : {}), ...(p.recentContext?.length ? { recentContext: p.recentContext } : {}), send, repo, logger, content,
+      ...(audio ? { audio } : {}), ...(material ? { material } : {}), ...(p.agent ? { agent: p.agent } : {}), ...(p.stickers ? { stickers: p.stickers } : {}), ...(p.recentContext?.length ? { recentContext: p.recentContext } : {}), send, repo, logger, content,
       maxPerDay: cfg.maxBotMsgsPerUserPerDay,
       maxPer10Min: cfg.maxBotMsgsPerUserPer10Min,
       ...(p.now ? { now: p.now } : {}),
+      ...(cfg.adminWaIds.length > 0 ? { adminWaIds: cfg.adminWaIds } : {}),
+      ...(cfg.networkGate ? { networkGate: cfg.networkGate } : {}),
       mentoria: { timezone: cfg.timezone, ...(a ? { store: a.store } : {}) },
       registration: {
         ...(cfg.whatsappFlowId ? { flowId: cfg.whatsappFlowId } : {}),
@@ -74,4 +79,21 @@ export function createEventHandler(cfg: Config, p: EventHandlerPorts): EventHand
       },
     });
   };
+}
+
+/** Porta de saída (sendGuarded) pronta para uso fora do motor: painel, avisos do matching. */
+export function createSender(cfg: Config, p: { repo: Repo; logger: Logger; fetchImpl?: typeof fetch; transport?: SendContext["transport"]; now?: () => Date }): (message: OutboundMessage) => ReturnType<typeof sendGuarded> {
+  return (message) =>
+    sendGuarded(message, {
+      repo: p.repo, logger: p.logger, phoneNumberId: cfg.evolutionInstance, evolutionUrl: cfg.evolutionUrl,
+      evolutionApiKey: cfg.evolutionApiKey, evolutionInstance: cfg.evolutionInstance,
+      evolutionNativeInteractive: cfg.evolutionNativeInteractive, stopAt: cfg.stopAt, timezone: cfg.timezone,
+      ...(p.fetchImpl ? { fetchImpl: p.fetchImpl } : {}), ...(p.transport ? { transport: p.transport } : {}), ...(p.now ? { now: p.now } : {}),
+    });
+}
+
+/** Envia um texto simples pelo caminho guardado (travas e anti-flood iguais às demais mensagens). */
+export function createTextSender(cfg: Config, p: { repo: Repo; logger: Logger; fetchImpl?: typeof fetch }): (to: string, body: string) => Promise<void> {
+  const send = createSender(cfg, p);
+  return async (to, body) => { await send({ to, type: "text", text: { body } }); };
 }

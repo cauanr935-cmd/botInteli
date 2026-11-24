@@ -23,9 +23,13 @@ export interface ContentSource {
   listCannedResponses(): Promise<Record<string, string>>;
 }
 
+/** Serviço do menu que abre o pedido de uma nova mentoria (o mesmo caminho da "dúvida": o que precisa -> horários -> mentor). */
+export const NEW_MENTORING_SERVICE_ID = "nova_mentoria";
+
 /** Serviços usados se o banco estiver vazio ou fora (mesmo conteúdo do seed). */
 export const DEFAULT_SERVICES: readonly Service[] = [
   { id: "mentoria", title: "Registrar mentoria", description: "Anexe o áudio da mentoria", requiresAudio: true, sortOrder: 5 },
+  { id: NEW_MENTORING_SERVICE_ID, title: "Marcar nova mentoria", description: "Peça um mentor para te ajudar", requiresAudio: false, sortOrder: 10 },
   { id: "horarios", title: "Horários", description: "Informe seus dias e horários livres", requiresAudio: false, sortOrder: 20 },
   { id: "contato", title: "Contato", description: "Fale com o Cauan, da Be My Mentor", requiresAudio: false, sortOrder: 30 },
 ];

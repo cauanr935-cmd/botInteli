@@ -239,8 +239,8 @@ describe("Mentoria v2 / Etapa 1: adversariais", () => {
     await s.text(a, "11/11/2026"); s.advance(1000);
     expect(bodyOf(s, a)).toMatch(/não pode ser no futuro/);
     const n = s.sentTo(a).length;
-    await s.text(a, "12/11/2026"); s.advance(1000); // segunda entrada inválida no mesmo estado: silêncio
-    expect(s.sentTo(a).length).toBe(n);
+    await s.text(a, "12/11/2026"); s.advance(1000); // segunda entrada inválida no mesmo estado: não fica mudo, pergunta o que a pessoa quis dizer
+    expect(s.sentTo(a).length).toBe(n + 1);
     await s.text(a, "05/11/2026"); s.advance(1000);
     expect((await s.repo.getConversation(a)).state).toBe("MENT_PARTNER");
     expect((await s.repo.getMentoriaDraft(a)).occurredOn).toBe("2026-11-05");

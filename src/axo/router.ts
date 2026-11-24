@@ -107,7 +107,7 @@ export function routeTurn(input: RouteInput): RouteDecision {
 }
 
 /** Falas fixas do modo esgotado (o Axo avisa na voz dele e mostra os botões). */
-export const EXHAUSTED_NOTICE = "tô com as brânquias cansadas hoje 🦎 vou seguir só pelos botões, tá?";
+export const EXHAUSTED_NOTICE = "tô com as brânquias cansadas hoje 🦎 vou seguir só pelas opções numeradas, tá?";
 
 /** Limite de mensagens por minuto por aluno (janela deslizante simples, sobre os horários já lidos do banco). */
 export function rateLimited(recentTimestamps: readonly Date[], now: Date, perMinute = MAX_MSGS_PER_STUDENT_PER_MINUTE): boolean {

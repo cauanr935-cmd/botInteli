@@ -1,9 +1,10 @@
 // Cliente de IA no formato "chat completions" (OpenAI): Groq (chave gsk_…) ou xAI Grok (chave xai-…).
 // Classifica intenção e lê horários livres (JSON curto).
 // Falha fechada: qualquer erro, timeout ou resposta fora do combinado devolve null e o bot segue sozinho.
-import { AI_PROVIDERS, type Config } from "../config";
+import { AI_PROVIDERS, type AiProviderConfig, type Config } from "../config";
 import { createLogger, type Logger } from "../lib/logger";
-import type { FaqResult, IntentAgent, IntentQuery } from "./agent";
+import type { FaqResult, IntentAgent, IntentQuery, RiffQuery } from "./agent";
+import { RIFF_SYSTEM } from "../axo/persona";
 import { BMM_KNOWLEDGE } from "./knowledge";
 import { sanitizeSlots, type ParsedAvailability } from "./types";
 
@@ -19,7 +20,15 @@ export interface GrokOptions {
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   logger?: Logger;
+  /** Provedores de reserva, na ordem: se o principal falhar (erro HTTP, timeout, rede), a mesma pergunta vai ao próximo. */
+  fallbacks?: readonly AiProviderConfig[];
 }
+
+/** Provedor que acabou de falhar fica "de castigo" por este tempo: as mensagens seguintes vão direto ao reserva (sem esperar o timeout). */
+export const PROVIDER_COOLDOWN_MS = 60_000;
+const failedAt = new Map<string, number>(); // por endereço+modelo; vale por isolate do Worker
+/** Só para testes. */
+export const resetProviderCooldowns = (): void => failedAt.clear();
 
 const SYSTEM_PROMPT =
   "Você ajuda um bot de WhatsApp de mentoria (Be My Mentor) a entender o que a pessoa quis dizer. " +
@@ -56,6 +65,22 @@ const FAQ_PROMPT =
   "Se a resposta não estiver na base, diga que não tem essa informação e indique o Contato. " +
   '"duvida_para_mentor" = dúvida de conteúdo acadêmico ou técnico (ex.: como funciona um rotacional, cálculo, programação, uma disciplina) que um mentor deve tirar: NÃO responda (resposta vazia). ' +
   '"fora_do_tema" = nada a ver com a Be My Mentor, estudos ou vida universitária (ex.: previsão do tempo, piadas): resposta vazia.';
+
+/** Aceita a fala do modelo só se for curta, sem link/número longo e sem cara de instrução vazada; senão null (vale o texto fixo). */
+export function cleanRiff(raw: string | null): string | null {
+  if (raw === null) return null;
+  const m = /\{[\s\S]*\}/.exec(raw);
+  if (!m) return null;
+  try {
+    const o = JSON.parse(m[0]) as { fala?: unknown };
+    const t = typeof o.fala === "string" ? o.fala.replace(/\s+/g, " ").trim().replace(/^["“”']+|["“”']+$/g, "") : "";
+    if (t.length < 4 || t.length > 220) return null;
+    if (/https?:|www\.|@|\d{5,}/i.test(t)) return null;
+    return t;
+  } catch {
+    return null;
+  }
+}
 
 /** Limpa a resposta do modelo: sem espaços extras, no máximo ANSWER_MAX_CHARS (corta em fim de frase quando der). */
 export function cleanAnswer(raw: string | null): string | null {
@@ -108,33 +133,62 @@ export class GrokIntentAgent implements IntentAgent {
     this.logger = o.logger ?? createLogger();
   }
 
-  /** Uma chamada ao modelo; devolve o texto da resposta ou null (erro, timeout, resposta estranha). */
-  private async complete(system: string, user: string, timeoutMs = this.timeoutMs): Promise<string | null> {
+  /**
+   * Uma pergunta à IA: tenta o provedor principal e, se ele falhar (erro HTTP, timeout, rede), os de reserva.
+   * Devolve o texto da resposta ou null (todos falharam ou a resposta veio estranha).
+   */
+  private async complete(system: string, user: string, timeoutMs = this.timeoutMs, temperature = 0): Promise<string | null> {
+    const providers: AiProviderConfig[] = [{ apiKey: this.o.apiKey, model: this.model, baseUrl: this.baseUrl }, ...(this.o.fallbacks ?? [])];
+    const started = Date.now();
+    const now = (): number => Date.now();
+    // Quem falhou há pouco vai para o fim da fila (mas ainda é a última tentativa, se for o único).
+    const cooling = (p: AiProviderConfig): boolean => providers.length > 1 && now() - (failedAt.get(`${p.baseUrl}|${p.model}`) ?? -Infinity) < PROVIDER_COOLDOWN_MS;
+    const order = [...providers.filter((p) => !cooling(p)), ...providers.filter(cooling)];
+    for (let i = 0; i < order.length; i++) {
+      const p = order[i] as AiProviderConfig;
+      // O reserva não ganha um timeout inteiro novo: o total fica perto do combinado (mínimo de 2 s para ele responder).
+      const budget = i === 0 ? timeoutMs : Math.max(2000, timeoutMs - (now() - started));
+      const r = await this.callProvider(p, system, user, budget, temperature);
+      if (r.ok) { failedAt.delete(`${p.baseUrl}|${p.model}`); return r.content; }
+      if (providers.length > 1) failedAt.set(`${p.baseUrl}|${p.model}`, now());
+      if (i < order.length - 1) this.logger.log("warn", "ai_fallback", { from: new URL(p.baseUrl).hostname });
+    }
+    return null;
+  }
+
+  /** Uma chamada a UM provedor. `ok:false` = falha de transporte/HTTP (vale tentar o reserva); `ok:true` com null = respondeu sem texto. */
+  private async callProvider(p: AiProviderConfig, system: string, user: string, timeoutMs: number, temperature: number): Promise<{ ok: true; content: string | null } | { ok: false }> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+      const call = (extra: Record<string, unknown>) => this.fetchImpl(`${p.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
         method: "POST",
         signal: ctrl.signal,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.o.apiKey}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.apiKey}` },
         body: JSON.stringify({
-          model: this.model,
-          temperature: 0,
+          model: p.model,
+          temperature,
           stream: false,
+          ...extra,
           messages: [{ role: "system", content: system }, { role: "user", content: user }],
         }),
       });
+      // Gemini Flash "pensa" por padrão (lento para uma resposta de 1 linha): pede sem raciocínio. Se o provedor recusar o
+      // parâmetro (400), repete sem ele.
+      const fast = /generativelanguage\.googleapis\.com/.test(p.baseUrl) && /flash/i.test(p.model);
+      let res = await call(fast ? { reasoning_effort: "none" } : {});
+      if (fast && res.status === 400) res = await call({});
       if (!res.ok) {
         // Sem conteúdo da mensagem no log: só o status (401/403 = chave ou provedor errado; 404 = modelo inexistente).
         this.logger.log("warn", "ai_http_error", { status: res.status });
-        return null;
+        return { ok: false };
       }
       const data = (await res.json()) as { choices?: { message?: { content?: unknown } }[] };
       const content = data.choices?.[0]?.message?.content;
-      return typeof content === "string" ? content : null;
+      return { ok: true, content: typeof content === "string" ? content : null };
     } catch (e) {
       this.logger.log("warn", "ai_failed", { error: e instanceof Error ? e.name : "unknown" });
-      return null;
+      return { ok: false };
     } finally {
       clearTimeout(timer);
     }
@@ -154,6 +208,21 @@ export class GrokIntentAgent implements IntentAgent {
     const parsed = parseAgentJson(content);
     if (!parsed || parsed.confianca < MIN_CONFIDENCE) return null;
     return q.options.some((x) => x.intent === parsed.intent) ? parsed.intent : null; // fora da lista fechada = ignora
+  }
+
+  async riff(q: RiffQuery): Promise<string | null> {
+    // Timeout curto: a fala é só tempero, não vale atrasar a resposta (cai no texto fixo).
+    const content = await this.complete(
+      RIFF_SYSTEM,
+      JSON.stringify({
+        situacao: q.situation,
+        ...(q.style ? { estilo: q.style } : {}),
+        ...(q.recent?.length ? { conversa_recente: q.recent } : {}),
+        mensagem_da_pessoa: q.text.slice(0, 200),
+      }),
+      Math.min(this.timeoutMs, 3500), 0.9,
+    );
+    return cleanRiff(content);
   }
 
   async summarizeSubject(doubt: string, informedSubject: string | null): Promise<string | null> {
@@ -231,6 +300,7 @@ export function createAgent(cfg: Config, logger?: Logger, fetchImpl?: typeof fet
   if (!cfg.aiApiKey) return undefined;
   return new GrokIntentAgent({
     apiKey: cfg.aiApiKey, model: cfg.aiModel, baseUrl: cfg.aiBaseUrl, timeoutMs: cfg.aiTimeoutMs,
+    ...(cfg.aiFallbacks?.length ? { fallbacks: cfg.aiFallbacks } : {}),
     ...(logger ? { logger } : {}), ...(fetchImpl ? { fetchImpl } : {}),
   });
 }

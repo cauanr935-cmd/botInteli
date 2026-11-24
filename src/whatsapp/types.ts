@@ -33,6 +33,10 @@ export interface AudioEvent extends MessageBase {
   mimeType?: string;
   /** true quando é nota de voz. */
   voice: boolean;
+  /** URL do arquivo já guardado pela Evolution no armazenamento S3 (R2): permite copiar em stream, sem limite de memória. */
+  mediaUrl?: string;
+  /** Tamanho declarado do arquivo, em bytes. */
+  fileSize?: number;
 }
 export interface DocumentEvent extends MessageBase {
   type: "document";

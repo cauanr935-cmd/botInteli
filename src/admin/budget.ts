@@ -12,7 +12,12 @@ export interface AdminDeps {
   stopAt: number;
   timezone: string;
   now?: () => Date;
+  /** Reprocessa um áudio antes recusado (arquivo grande já no S3/R2 da Evolution). Ausente = 501. */
+  reprocessAudio?: (req: ReprocessRequest) => Promise<ReprocessResult>;
 }
+
+export interface ReprocessRequest { phone: string; mediaUrl: string; mimeType: string; fileSize?: number; messageId: string }
+export type ReprocessResult = "done" | "invalid" | "failed" | "no_consent" | "unknown_contact";
 
 export const UNLOCK_CONFIRM = "EU_ENTENDO_O_RISCO";
 
@@ -76,6 +81,19 @@ export async function handleAdmin(request: Request, deps: AdminDeps): Promise<Re
       await deps.repo.clearManualLock(deps.phoneNumberId, by);
       deps.logger.log("warn", "manual_lock_cleared", { by });
       return json(await snapshot(deps));
+    }
+    if (url.pathname === "/admin/reprocess-audio" && request.method === "POST") {
+      if (!deps.reprocessAudio) return json({ error: "reprocesso indisponível (R2/MEDIA_URL_HOSTS)" }, 501);
+      const b = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+      const phone = typeof b?.phone === "string" ? b.phone.replace(/\D/g, "") : "";
+      const mediaUrl = typeof b?.mediaUrl === "string" ? b.mediaUrl : "";
+      const mimeType = typeof b?.mimeType === "string" ? b.mimeType : "";
+      const messageId = typeof b?.messageId === "string" && /^[\w-]{1,100}$/.test(b.messageId) ? b.messageId : "";
+      const fileSize = typeof b?.fileSize === "number" && b.fileSize > 0 ? b.fileSize : undefined;
+      if (!phone || !mediaUrl || !mimeType || !messageId) return json({ error: "campos obrigatórios: phone, mediaUrl, mimeType, messageId" }, 400);
+      const outcome = await deps.reprocessAudio({ phone, mediaUrl, mimeType, messageId, ...(fileSize ? { fileSize } : {}) });
+      deps.logger.log("info", "audio_reprocessed", { outcome });
+      return json({ outcome }, outcome === "done" ? 200 : outcome === "unknown_contact" ? 404 : 422);
     }
     return json({ error: "not found" }, 404);
   } catch {

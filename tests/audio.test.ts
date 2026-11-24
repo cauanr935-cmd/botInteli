@@ -35,6 +35,7 @@ interface Opts {
   maxPer10Min?: number;
   consent?: boolean;
   state?: string;
+  openStream?: NonNullable<MediaClient["openStream"]>;
 }
 
 function setup(o: Opts = {}) {
@@ -48,7 +49,7 @@ function setup(o: Opts = {}) {
   const graph = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: `o${++seq}` }] }), { status: 200 }));
   const getInfo = vi.fn(o.info ?? (async () => ({ url: "https://cdn.example/a", mimeType: "audio/ogg", fileSize: 100 })));
   const download = vi.fn(o.download ?? (async () => ({ ok: true, bytes: bytes() }) as DownloadResult));
-  const media: MediaClient = { getInfo, download };
+  const media: MediaClient = { getInfo, download, ...(o.openStream ? { openStream: o.openStream } : {}) };
   const store = new MemoryAudioStore();
   const analyzer = o.analyzer ?? new MockAudioAnalyzer();
   const provider = new ContentProvider(repo, logger, 60_000, () => t);
@@ -58,7 +59,7 @@ function setup(o: Opts = {}) {
       timezone: "America/Sao_Paulo", transport: asTransport(graph as never), now,
     });
   const maxPer10Min = o.maxPer10Min ?? 50;
-  const audioDeps = {
+  const audioDeps: Parameters<typeof processAudio>[2] = {
     repo, logger, send, media, store, analyzer, content: provider, maxAudioBytes: o.maxAudioBytes ?? 16_000_000,
     maxPerDay: 50, maxPer10Min, timezone: "America/Sao_Paulo", now, uuid: () => `00000000-0000-4000-8000-00000000000${++seq % 10}`,
   };
@@ -300,15 +301,16 @@ describe("C6.5 sem janela de 24h", () => {
 });
 
 describe("C6.6 tipo ou tamanho inválido", () => {
-  it("C6.6 tipo não-áudio no webhook: não chama a Graph nem o analisador; dica única", async () => {
+  it("C6.6 tipo não-áudio no webhook: não analisa, sem registro; guarda na quarentena (rejeitados); dica única", async () => {
     const s = setup();
     await s.ready();
-    await s.feed(audio({ mimeType: "video/mp4" }));
-    await s.feed(audio({ mimeType: "video/mp4" }));
-    expect(s.getInfo).not.toHaveBeenCalled();
+    await s.feed(audio({ mimeType: "image/jpeg" }));
+    await s.feed(audio({ mimeType: "image/jpeg" }));
     expect((s.analyzer as MockAudioAnalyzer).calls).toHaveLength(0);
     expect(s.sent()).toHaveLength(1);
     expect(s.repo.audios.size).toBe(0);
+    expect([...s.store.objects.keys()].every((k) => k.startsWith("audios/rejeitados/"))).toBe(true);
+    expect(s.store.objects.size).toBeGreaterThan(0);
   });
 
   it("C6.6 tamanho informado acima de MAX_AUDIO_BYTES: não baixa nem analisa; dica única", async () => {
@@ -339,13 +341,14 @@ describe("C6.6 tipo ou tamanho inválido", () => {
 });
 
 describe("C6.7 durante PROCESSING_AUDIO", () => {
-  it("C6.7 áudio e texto em PROCESSING_AUDIO: 0 envios e nada processado", async () => {
+  it("C6.7 áudio e texto em PROCESSING_AUDIO: nada processado; só a saudação recebe um aviso de que o áudio está em análise", async () => {
     const s = setup({ state: "PROCESSING_AUDIO" });
     await s.ready();
     await s.feed(audio());
     await s.feed(text("oi"));
     await s.feed(text("menu"));
-    expect(s.graph).not.toHaveBeenCalled();
+    expect(s.graph).toHaveBeenCalledTimes(1); // só o "oi" ganha feedback (não fica sem saber se o bot caiu)
+    expect(s.sent().at(-1).text.body).toMatch(/cuidando do seu áudio/);
     expect(s.getInfo).not.toHaveBeenCalled();
     expect(s.repo.audios.size).toBe(0);
   });
@@ -419,8 +422,10 @@ describe("arquivos de áudio gravados antes (qualquer formato comum)", () => {
     expect(canonicalAudioMime("application/ogg")).toBe("audio/ogg");
     expect(canonicalAudioMime("audio/flac")).toBe("audio/flac");
     expect(canonicalAudioMime("application/pdf")).toBeNull();
-    expect(canonicalAudioMime("video/mp4")).toBeNull();
+    expect(canonicalAudioMime("video/mp4")).toBe("audio/mp4"); // .mp4 vale como o áudio dele
     expect(audioMimeFromFilename("Reunião 10-11.M4A")).toBe("audio/mp4");
+    expect(audioMimeFromFilename("mentoria.m4p")).toBe("audio/mp4");
+    expect(resolveAudioMime("application/octet-stream", "mentoria.m4p")).toBe("audio/mp4");
     expect(audioMimeFromFilename("mentoria.exe")).toBeNull();
     // tipo ausente ou genérico: vale a extensão; tipo claramente não-áudio continua recusado
     expect(resolveAudioMime("", "gravacao.wav")).toBe("audio/wav");
@@ -459,6 +464,104 @@ describe("arquivos de áudio gravados antes (qualquer formato comum)", () => {
     const s = setup({ info: async () => ({ url: "https://cdn.example/a", mimeType: "image/jpeg", fileSize: 100 }) });
     await s.ready();
     await s.feed(audio({ mimeType: "audio/ogg" }));
+    expect(s.repo.audios.size).toBe(0); // sem registro nem avanço da conversa
+    expect([...s.store.objects.keys()].every((k) => k.startsWith("audios/rejeitados/"))).toBe(true); // só a quarentena
+  });
+
+  it("mp4 (video/mp4) enviado como vídeo ou como documento é aceito igual ao ogg", async () => {
+    const { parseWebhookPayload: parseWebhook } = await import("../src/whatsapp/parser");
+    const v = parseWebhook(upsert({ videoMessage: { mimetype: "video/mp4" } }, { id: "V1" }));
+    expect(v[0]).toMatchObject({ type: "audio", mediaId: "V1", mimeType: "audio/mp4", voice: false });
+    const d = parseWebhook(upsert({ documentMessage: { mimetype: "video/mp4", fileName: "reuniao.mp4" } }, { id: "V2" }));
+    expect(d[0]).toMatchObject({ type: "audio", mimeType: "audio/mp4" });
+    const s = setup({ info: async () => ({ url: "https://cdn.example/a", mimeType: "video/mp4", fileSize: 100 }) });
+    await s.ready();
+    await s.feed(audio({ mimeType: "audio/mp4" }));
+    expect(s.repo.audios.size).toBe(1);
+    const [key, obj] = [...s.store.objects.entries()][0]!;
+    expect(key.startsWith("audios/mentorias/") && key.endsWith(".m4a")).toBe(true);
+    expect(obj.mime).toBe("audio/mp4");
+  });
+});
+
+describe("arquivo grande: a Evolution grava no S3/R2 e o Worker copia em stream", () => {
+  const streamOf = (n: number) => () => Promise.resolve({
+    ok: true as const, size: n,
+    body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(n).fill(7)); c.close(); } }),
+  });
+
+  it("64 MB (acima de MAX_AUDIO_BYTES) é guardado em mentorias/ sem usar o download em memória, e a pessoa recebe o aviso de mentoria registrada", async () => {
+    const BIG = 64 * 1024 * 1024;
+    const open = vi.fn(async () => ({ ok: true as const, size: BIG, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(BIG)); c.close(); } }) }));
+    const s = setup({ openStream: open });
+    s.audioDeps.maxAudioStreamBytes = 300_000_000;
+    await s.ready();
+    await s.feed(audio({ mimeType: "audio/mp4", mediaUrl: "https://midia.example/mentoria.m4p", fileSize: BIG }));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(s.download).not.toHaveBeenCalled();
+    const [key, obj] = [...s.store.objects.entries()][0]!;
+    expect(key.startsWith("audios/mentorias/") && key.endsWith(".m4a")).toBe(true);
+    expect(obj.bytes.length).toBe(BIG);
+    expect(s.repo.audios.size).toBe(1);
+    expect((await s.repo.getConversation(WA)).state).toBe("MENT_ROLE");
+    expect(s.sent()).toHaveLength(1);
+    expect(JSON.stringify(s.sent()[0])).toMatch(/mentoria já está registrada/);
+  });
+
+  it("reprocesso: a resposta de sucesso é UMA mensagem que começa com 'conseguimos processar a sua mentoria'", async () => {
+    const s = setup({ openStream: streamOf(10) });
+    s.audioDeps.successIntro = "Poxa, conseguimos processar a sua mentoria!";
+    await s.ready();
+    await s.feed(audio({ mimeType: "audio/mp4", mediaUrl: "https://midia.example/a", fileSize: 10 }));
+    expect(s.sent()).toHaveLength(1);
+    expect(JSON.stringify(s.sent()[0])).toMatch(/Poxa, conseguimos processar a sua mentoria!/);
+    expect(JSON.stringify(s.sent()[0])).toMatch(/mentoria já está registrada/);
+  });
+
+  it("acima de MAX_AUDIO_STREAM_BYTES: não copia; resposta de arquivo inválido", async () => {
+    const open = vi.fn(streamOf(10));
+    const s = setup({ openStream: open });
+    s.audioDeps.maxAudioStreamBytes = 5;
+    await s.ready();
+    await s.feed(audio({ mimeType: "audio/mp4", mediaUrl: "https://midia.example/a", fileSize: 10 }));
     expect(s.store.objects.size).toBe(0);
+    expect(s.repo.audios.size).toBe(0);
+    expect(s.sent()).toHaveLength(1);
+  });
+
+  it("host não liberado (openStream recusa): cai no download normal", async () => {
+    const s = setup({ openStream: async () => ({ ok: false }) });
+    await s.ready();
+    await s.feed(audio({ mimeType: "audio/ogg", mediaUrl: "https://outro.example/a" }));
+    expect(s.download).toHaveBeenCalledTimes(1);
+    expect(s.repo.audios.size).toBe(1);
+  });
+
+  it("tipo recusado em arquivo grande vai para a quarentena (rejeitados)", async () => {
+    const s = setup({ openStream: streamOf(20) });
+    await s.ready();
+    await s.feed(audio({ mimeType: "image/jpeg", mediaUrl: "https://midia.example/a" }));
+    expect(s.repo.audios.size).toBe(0);
+    expect([...s.store.objects.keys()].every((k) => k.startsWith("audios/rejeitados/"))).toBe(true);
+  });
+
+  it("cliente de mídia: só https e só hosts da lista; sem redirecionamento", async () => {
+    const { createMediaClient } = await import("../src/whatsapp/evolutionClient");
+    const f = vi.fn(async () => new Response("abc", { status: 200, headers: { "content-length": "3" } }));
+    const c = createMediaClient({ url: "https://evo.test", apiKey: "k", instance: "i", fetchImpl: f as never, mediaHosts: ["midia.example"] });
+    expect((await c.openStream!("https://midia.example/x")).ok).toBe(true);
+    expect((await c.openStream!("http://midia.example/x")).ok).toBe(false);
+    expect((await c.openStream!("https://evil.example/x")).ok).toBe(false);
+    expect((await c.openStream!("https://u:p@midia.example/x")).ok).toBe(false);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("parser: mediaUrl (https) e fileLength do webhook; .m4p como documento vira áudio", async () => {
+    const { parseWebhookPayload } = await import("../src/whatsapp/parser");
+    const payload = (message: unknown) => ({ event: "messages.upsert", data: { key: { remoteJid: "5511999990000@s.whatsapp.net", fromMe: false, id: "BIG1" }, messageTimestamp: 1, message } });
+    const e = parseWebhookPayload(payload({ documentMessage: { mimetype: "application/octet-stream", fileName: "mentoria.m4p", fileLength: "67108864", mediaUrl: "https://midia.example/BIG1" } }));
+    expect(e[0]).toMatchObject({ type: "audio", mimeType: "audio/mp4", mediaUrl: "https://midia.example/BIG1", fileSize: 67108864 });
+    const h = parseWebhookPayload(payload({ documentMessage: { mimetype: "application/octet-stream", fileName: "mentoria.m4p", mediaUrl: "http://inseguro/x" } }));
+    expect((h[0] as { mediaUrl?: string }).mediaUrl).toBeUndefined();
   });
 });

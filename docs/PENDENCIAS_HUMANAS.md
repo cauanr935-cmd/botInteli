@@ -8,11 +8,13 @@
 - [ ] Comprar um chip **dedicado e novo**; criar a instância e conectar pelo QR Code; manter o aparelho/chip ativo e com recargas.
 - [ ] Configurar o webhook da instância (`MESSAGES_UPSERT`, header `x-webhook-token`) e conferir com `GET /webhook/find/<instância>`.
 - [ ] Aplicar `supabase/migrations/0017_pending_choices.sql` (ou rodar o `schema_completo.sql`).
+- [ ] Aplicar `supabase/migrations/0018_matching.sql` (matching manual: dúvidas com status, `matches`, `mentors_view`).
 - [ ] Decidir `ANTI_FLOOD_MAX_PER_DAY` (recomendado ligar, ex.: 300) e aquecer o número aos poucos.
 - [ ] **Aceitar o risco de banimento** (Baileys viola os Termos do WhatsApp) e ter um plano B (outro chip).
 - [ ] **Validar numa instância real** (nada disso foi testado contra a Evolution; a documentação é ambígua):
   - [ ] corpo do `sendText` aceito pela sua versão (`{ number, text }`; se rejeitar, a doc cita `textMessage.text`);
   - [ ] o payload real de `messages.upsert` (texto, áudio/nota de voz, documento, contato) bate com `src/whatsapp/parser.ts` (`tests/helpers/evolution.ts` reproduz o formato assumido);
+  - [ ] `POST /chat/findMessages/{instância}` (recuperação de mensagens perdidas, `fetchRecentInbound`) aceita `{ where: { key: { fromMe: false }, messageTimestamp: { gte } }, page, offset }` e devolve `{ messages: { records: [...] } }` no formato do `messages.upsert` (o código aceita também lista direta). Sem isso, a recuperação não acha nada, mas o bot segue normal;
   - [ ] `POST /chat/getBase64FromMediaMessage` aceita `{ message: { key: { id } } }` e devolve `{ base64, mimetype }` (se exigir a mensagem inteira, ajustar `createMediaClient`);
   - [ ] como chega o telefone quando o remetente aparece como `@lid` (campo `remoteJidAlt`?);
   - [ ] se botões/listas nativos entregam (`EVOLUTION_NATIVE_INTERACTIVE=true`); caso não, manter o texto numerado;
@@ -91,8 +93,30 @@ Página pública em `GET /privacidade` (e `/termos`), texto em `src/legal/page.t
 - [ ] **Eliminação (LGPD art. 18)**: o contrato prevê que o bot repasse o `pessoa_id` ao notebook para apagar nome, matrícula e sal. Fora do escopo das 6 etapas da v2: precisa de um comando/rota e de um procedimento.
 - [ ] Ambiente de desenvolvimento: existe um `.dev.vars` real na pasta do projeto e o teste C0.6 (`tests/repo-hygiene.test.ts`) exige que ele não exista. É um arquivo seu (ignorado pelo git); o teste falha só por isso, não por código. Mova o arquivo para fora da pasta ao rodar `npm run verify`, ou ajuste o teste.
 
+## Design Conversacional do Axo — decisões do dono (2026-11-17)
+
+1. **Gemini gratuito:** mantido, com aviso nos Termos e na Política (itens 6 e 12) e na FAQ do bot; versão dos Termos `2026-11-2`. **Pendente:** quem já aceitou a versão anterior não viu o aviso; os Termos dizem que mudança relevante pede novo aceite (decidir se pede de novo).
+2. **Emoji:** o Axo segue usando (até 1; 🦎 é a assinatura), exceto no modo cuidado.
+3. **Figurinhas:** 12 do Axo (folha `docs/referencias/figurinhasAxolote.webp`) em `assets/stickers/`, recortadas com fundo transparente e sem perda de qualidade.
+4. **Nome:** Be My Mentor (persona e spec atualizadas).
+5. **Match:** continua manual (admin/painel).
+6. **Memória/retomada por resumo de LLM:** não será feita.
+7. **Tom:** "bora deixar de brincadeira" suavizado para "bora retomar de onde a gente parou?".
+8. **Lore do Axo** (origem, bordões, piadas internas): o link do estudo estava inacessível; segue vazio.
+9. **Cópias do documento:** `Design Conversacional do Bot Axo.md` está em 3 lugares; só `docs/referencias/` precisa existir (a de `assets/stickers/` vai junto no deploy).
+
 ## 2026-11-18 — Áudios de perfil (`audios/informacoes/`)
 - [ ] **Extração de pontos de similaridade dos áudios de perfil**: definir onde roda (se for LLM externo, é transferência internacional), o que extrai (só o necessário para o matching; descartar religião, política, saúde etc.) e apagar o áudio logo depois. A data de nascimento indica menores de idade. Hoje os áudios de `audios/informacoes/` são só guardados e ninguém os processa (o notebook só recebe mentorias, `subject not null`): dado pessoal guardado sem finalidade em uso. Não implementar a extração agora.
 - [ ] **Decidir se o bot continua coletando o áudio de perfil** até essa extração existir (LGPD: finalidade e minimização).
 - [ ] **Apagar os áudios órfãos do R2** (formato antigo, de antes da limpeza do banco de 2026-11-18): Cloudflare -> R2 -> `bot-whatsapp-audios` -> Objects -> prefixo `audios/` (e `materiais/`, se houver). Só um humano pode fazer: o agente não tem acesso de listagem. Depois, avaliar uma checagem periódica de órfãos no cron.
 - [ ] **PESSOA_ID_SECRET**: criar em produção (`openssl rand -hex 32 | npx wrangler secret put PESSOA_ID_SECRET`), guardar backup no gerenciador de senhas e só então fazer o deploy.
+
+
+## 2026-11-18 — Curadoria: aviso da decisão da equipe
+- [ ] **Aplicar `supabase/migrations/0021_curadoria.sql`** antes do deploy (passo a passo em `docs/DEPLOY.md`, seção "Aviso da decisão da equipe").
+- [ ] **Conferir com uma mentoria de teste**: o notebook força o reenvio do resumo e a mensagem de aprovada/recusada chega uma vez.
+- [ ] **Pedidos de revisão (`revisao_pedidos`)**: por enquanto a equipe vê os pedidos abertos no painel (aba Mentorias: mentoria, data e papel de quem pediu) e atende pelo notebook (`mentorias decidir --forcar`). **Depois: `GET /api/v1/revisoes?status=aberta`** para o notebook listar esses pedidos automaticamente (e marcar como `atendida`). Ainda não existe; fica para quando o contrato dessas rotas for definido.
+- [ ] **Botão [Pedir certificado]**: não implementado. Hoje a mensagem de aprovada é só texto. O item 5 do contrato (pedidos de certificado) vem do notebook, completo, junto com as rotas.
+- [ ] **Recusa automática (LGPD art. 20)**: quando o notebook manda `curadoria.status = "recusada"` direto (sessão fora dos critérios objetivos, ex.: menos de 20 min), a mensagem de recusa com [Pedir revisão] é o que garante a revisão humana. Não remover.
+
+- [ ] **Áudios grandes (64 MB):** configurar o S3 da Evolution apontando para o R2 e `MEDIA_URL_HOSTS` no Worker (docs/DEPLOY.md, "Áudios grandes"); conferir numa instância real se o webhook traz `mediaUrl` com o host esperado.

@@ -20,8 +20,8 @@ async function toMenu(s: Simulator, p: string) {
 }
 
 describe("menu e serviços", () => {
-  it("o menu não tem 'Análise de áudio' e tem Registrar mentoria, Horários e Contato", () => {
-    expect(DEFAULT_SERVICES.map((x) => x.title)).toEqual(["Registrar mentoria", "Horários", "Contato"]);
+  it("o menu não tem 'Análise de áudio' e tem Registrar mentoria, Marcar nova mentoria, Horários e Contato", () => {
+    expect(DEFAULT_SERVICES.map((x) => x.title)).toEqual(["Registrar mentoria", "Marcar nova mentoria", "Horários", "Contato"]);
   });
 
   it("Registrar mentoria: pede o arquivo, guarda e pergunta o papel (a mentoria só fica completa depois)", async () => {

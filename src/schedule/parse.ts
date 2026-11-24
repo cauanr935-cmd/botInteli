@@ -42,6 +42,9 @@ const TOKEN = new RegExp([
   "(?<util>\\b(?:dias uteis|dia util|de segunda a sexta)\\b)",
   "(?<weekend>\\b(?:fim|fins|final|finais) de semana\\b)",
   `(?<day>\\b(${DAY_RE})\\b)`,
+  // "depois das 17", "após as 17", "a partir das 17" (até o fim do expediente) e "até as 12", "antes das 12" (desde a abertura)
+  `(?<after>\\b(?:apos|depois|a partir)(?:\\s+(?:das|dos|de|da|do|as|a|os|o))?\\s*${TIME_PART}${UNIT})`,
+  `(?<until>\\b(?:ate|antes)(?:\\s+(?:das|dos|de|da|do|as|a|os|o))?\\s*${TIME_PART}${UNIT})`,
   `(?<range>${RANGE_RE})`,
   "(?<fullday>\\b(?:dia todo|dia inteiro|o dia todo|integral)\\b)",
   "(?<morning>\\b(?:manha|de manha)\\b)",
@@ -51,7 +54,7 @@ const TOKEN = new RegExp([
 ].join("|"), "g");
 
 const normalize = (raw: string): string =>
-  raw.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[–—−]/g, "-").replace(/[^a-z0-9:\-\s]/g, " ").replace(/\s+/g, " ").trim();
+  raw.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[–—−]/g, "-").replace(/[^a-z0-9:\-\s]/g, " ").replace(/\s+/g, " ").replace(/(\d(?::\d{2})?\s*(?:h|hs|hrs|horas?)?)\s+da\s+(?:tarde|manha|noite)\b/g, "$1").trim(); // "4 da tarde" = 4h (a hora já diz o turno)
 
 /** Hora escrita -> hora de 24h dentro do expediente (1h a 7h só podem ser da tarde: 2 -> 14). */
 const toHour = (h: number): number => (h >= 1 && h <= 7 ? h + 12 : h);
@@ -135,6 +138,13 @@ export function parseScheduleText(raw: string): ParsedSchedule {
     else if (g.range !== undefined) {
       const r = timeRangeFromMatch(g.range);
       if (r) times.push(r);
+    } else if (g.after !== undefined || g.until !== undefined) {
+      const n = /(\d{1,2})(?:[:h]\s*(\d{2}))?/.exec((g.after ?? g.until) as string);
+      if (n) {
+        const t = toHour(Number(n[1])) * 60 + Number(n[2] ?? 0);
+        const r = g.after !== undefined ? clampRange(t, CLOSE_MIN) : clampRange(OPEN_MIN, t);
+        if (r) times.push(r);
+      }
     } else if (g.fullday !== undefined) times.push([OPEN_MIN, CLOSE_MIN]);
     else if (g.morning !== undefined) times.push([480, 720]);
     else if (g.afternoon !== undefined) times.push([720, 1080]);

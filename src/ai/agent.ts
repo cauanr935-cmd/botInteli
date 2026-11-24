@@ -20,7 +20,22 @@ export interface IntentQuery {
   /** Últimas mensagens da conversa ("pessoa: ...", "atendimento: ..."), curtas e sem nome nem telefone. Opcional. */
   recent?: readonly string[];
 }
+/** Situações em que o Axo improvisa uma frase curta (o texto fixo continua como reserva). */
+export type RiffSituation = "off_topic" | "off_topic_last" | "farewell" | "resume";
+export interface RiffQuery {
+  situation: RiffSituation;
+  /** Texto da pessoa (curto, sem nome nem telefone). */
+  text: string;
+  /** Linha ESTILO montada pelo código (registro, tamanho, emoji, gírias). */
+  style?: string;
+  recent?: readonly string[];
+}
 export interface IntentAgent {
+  /**
+   * Improvisa UMA fala curta do Axo (descontraída, no registro da pessoa) para a situação. É só o "tempero": o código
+   * decide quando falar e acrescenta a pergunta da etapa. `null` = falhou ou saiu estranho (vale o texto fixo).
+   */
+  riff?(q: RiffQuery): Promise<string | null>;
   /** Devolve o `intent` escolhido (um dos ids de `options`) ou null se não houver certeza/falhar. */
   classify(q: IntentQuery): Promise<string | null>;
   /**

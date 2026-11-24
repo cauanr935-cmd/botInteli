@@ -72,7 +72,9 @@ describe("adv etapa 3", () => {
     for (const x of ["", "   ", "\u0000", "oi".repeat(5000), "o i", "oi?? tudo bem", "ola mundo cruel", "🎉"]) {
       expect(() => intentsOf(x)).not.toThrow();
     }
-    expect(intentsOf("oi tudo bem").has("greeting")).toBe(false);
+    expect(intentsOf("oi tudo bem").has("greeting")).toBe(true); // "oi, tudo bem?" é saudação: a pessoa recebe retomada, não silêncio
+    expect(intentsOf("tá por aí?").has("greeting")).toBe(true);
+    expect(intentsOf("me ajuda com cálculo").has("greeting")).toBe(false);
     expect(intentsOf("sair").has("greeting")).toBe(false);
   });
   it("body vazio/undefined em texto: sem exceção no decide", () => {

@@ -22,7 +22,7 @@ export interface AudioAnalyzer {
 export class DeferredAudioAnalyzer implements AudioAnalyzer {
   readonly deferred = true;
   async analyze(): Promise<AnalyzerResult> {
-    return { text: "Áudio recebido e guardado. A análise fica disponível em breve. Para continuar, toque em Menu.", raw: null };
+    return { text: "Áudio recebido e guardado. A análise fica disponível em breve. Para continuar, envie *menu*.", raw: null };
   }
 }
 

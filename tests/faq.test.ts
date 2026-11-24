@@ -59,7 +59,7 @@ describe("perguntas em qualquer etapa", () => {
     expect(calls).toHaveLength(0); // antes do aceite o texto da pessoa não sai para a IA
     expect(bodyOf(s, p)).toContain(URL);
     expect(bodyOf(s, p)).toMatch(/Cadastro|cadastro|Menu|Registrar mentoria|usar/);
-    expect(bodyOf(s, p)).toMatch(/Toque em \*Aceito\*/);
+    expect(bodyOf(s, p)).toMatch(/Digite \*1\*/);
     expect(btnIds(s, p)).toEqual(["consent_yes"]);
     expect(bodyOf(s, p).length).toBeLessThanOrEqual(1024);
     expect((await s.repo.getConversation(p)).state).toBe("REG_CONSENT");
@@ -164,7 +164,7 @@ describe("LGPD e uso dos dados: respondidos mesmo sem aceitar", () => {
     ["o que é a LGPD? quais são os meus direitos?", "direitos", /Lei 13\.709\/2018[\s\S]*ANPD/],
     ["a IA lê as minhas mensagens?", "ia", /sem nome nem telefone[\s\S]*depois do seu aceite/],
     ["meus dados vão para fora do Brasil?", "exterior", /Estados Unidos/],
-    ["isso vai pra blockchain? dá pra apagar?", "blockchain", /não pode ser alterada nem apagada/],
+    ["isso vai pra blockchain? dá pra apagar?", "blockchain", /não podem ser alterados/],
     ["e se eu não aceitar os termos?", "sem-aceite", /voluntário[\s\S]*só temos o número do WhatsApp/],
   ])("antes do aceite: %s", async (q, id, expected) => {
     const { legalAnswer } = await import("../src/rag/legal-faq");
@@ -197,5 +197,15 @@ describe("LGPD e uso dos dados: respondidos mesmo sem aceitar", () => {
     for (const fact of [/12 meses/, /5 anos/, /6 meses/, /15 dias/, /ANPD/, /Estados Unidos/, /pseudonimizadas/, /não vendemos nem comercializamos/i, /dados pessoais sensíveis/i, /Lei nº 13\.709\/2018/]) expect(html).toMatch(fact);
     expect(LEGAL_TOPICS.every((t) => t.answer.length <= 700)).toBe(true);
     for (const t of LEGAL_TOPICS) expect(t.answer, t.id).not.toMatch(/aguard|processando|um momento/i);
+  });
+});
+
+describe("dúvida de negócio não vira resposta de LGPD", () => {
+  it.each([
+    "Estou desenvolvendo uma plataforma para comprar e vender peças usadas, com vendedor verificado. Qual o prazo ideal para validar com usuários?",
+    "Como guardar o orçamento e os terceiros que vão me ajudar no servidor do meu projeto?",
+  ])("%s", async (q) => {
+    const { legalAnswer } = await import("../src/rag/legal-faq");
+    expect(legalAnswer(q)).toBeNull();
   });
 });

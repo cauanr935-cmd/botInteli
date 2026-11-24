@@ -4,14 +4,14 @@ import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
   AudioRecord,
-  BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingChoiceOption, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  BudgetRow, ConversationFields, LoginAttemptRepo, MatchDetail, MatchPatch, MatchRow, MatchingRepo, DoubtRow, MemberCounts, MentorRow, Slot, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingChoiceOption, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome, ReviewRequest, CertificateRequest,
 } from "./repo";
 
-const MENTORIA_COLS = "id,wa_id_hash,mentoria_role,subject,partner,mime,bytes,r2_key,created_at,analysis_result,analysis_at,ocorreu_em,partner_wa_id_hash,partner_confirmed_at,partner_rejected_at,audio_sha256,audio_deleted_at,contested_reason";
+const MENTORIA_COLS = "id,wa_id_hash,mentoria_role,subject,partner,mime,bytes,r2_key,created_at,analysis_result,analysis_at,ocorreu_em,partner_wa_id_hash,partner_confirmed_at,partner_rejected_at,audio_sha256,audio_deleted_at,contested_reason,notified_curadoria";
 const UUID = /^[0-9a-fA-F-]{36}$/;
 
 /** Repo sobre a API REST (PostgREST) do Supabase. */
-export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
+export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo, MatchingRepo {
   constructor(
     private readonly url: string,
     private readonly serviceKey: string,
@@ -36,6 +36,15 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (!res.ok) throw new Error(`supabase claimMessage falhou: ${res.status}`);
     const rows = (await res.json()) as unknown[];
     return Array.isArray(rows) && rows.length > 0;
+  }
+
+  async unseenMessageKeys(keys: readonly string[]): Promise<string[]> {
+    if (keys.length === 0) return [];
+    const list = keys.map((k) => `"${k.replace(/["\\]/g, "")}"`).join(",");
+    const res = await this.fetchImpl(`${this.url}/rest/v1/processed_messages?select=wamid&wamid=in.(${encodeURIComponent(list)})`, { headers: this.headers() });
+    if (!res.ok) throw new Error(`supabase unseenMessageKeys falhou: ${res.status}`);
+    const seen = new Set(((await res.json()) as { wamid: string }[]).map((r) => r.wamid));
+    return keys.filter((k) => !seen.has(k));
   }
 
   async unclaimMessage(key: string): Promise<void> {
@@ -171,13 +180,171 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (!res.ok) throw new Error(`supabase insertMaterial falhou: ${res.status}`);
   }
 
-  async insertDoubt(_waId: string, d: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void> {
+  async insertDoubt(waId: string, d: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void> {
     const res = await this.fetchImpl(`${this.url}/rest/v1/doubts`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ id: crypto.randomUUID(), wa_id_hash: d.waIdHash, text: d.text, categories: d.categories, created_at: d.at.toISOString() }),
+      body: JSON.stringify({ id: crypto.randomUUID(), wa_id_hash: d.waIdHash, wa_id: waId, status: "aberta", text: d.text, categories: d.categories, created_at: d.at.toISOString() }),
     });
     if (!res.ok) throw new Error(`supabase insertDoubt falhou: ${res.status}`);
+  }
+
+  // ---- Matching manual ----
+  private async rest<T>(path: string, init: RequestInit = {}, what = "matching"): Promise<T> {
+    const res = await this.fetchImpl(`${this.url}/rest/v1/${path}`, { ...init, headers: this.headers((init.headers as Record<string, string> | undefined) ?? {}) });
+    if (!res.ok) throw new Error(`supabase ${what} falhou: ${res.status}`);
+    return (await res.json()) as T;
+  }
+  private static doubt(r: Record<string, unknown>): DoubtRow {
+    return {
+      id: String(r.id), seq: Number(r.seq), waId: String(r.wa_id ?? ""), text: String(r.text),
+      categories: Array.isArray(r.categories) ? (r.categories as string[]) : [], status: r.status as DoubtRow["status"], createdAt: new Date(String(r.created_at)),
+    };
+  }
+  private static mentor(r: Record<string, unknown>): MentorRow {
+    return {
+      seq: Number(r.seq), waId: String(r.wa_id), name: typeof r.full_name === "string" ? r.full_name : null,
+      categories: Array.isArray(r.mentor_categories) ? (r.mentor_categories as string[]) : [], slots: Array.isArray(r.availability_slots) ? (r.availability_slots as Slot[]) : [],
+    };
+  }
+  private static match(r: Record<string, unknown>): MatchRow {
+    const s = (v: unknown): string | null => (typeof v === "string" ? v : null);
+    return {
+      id: String(r.id), seq: Number(r.seq), doubtId: String(r.doubt_id), mentorWaId: String(r.mentor_wa_id), menteeWaId: String(r.mentee_wa_id),
+      status: r.status as MatchRow["status"], mentorSlots: Array.isArray(r.mentor_slots) ? (r.mentor_slots as Slot[]) : null,
+      chosenDay: s(r.chosen_day), chosenStart: s(r.chosen_start), chosenEnd: s(r.chosen_end), location: s(r.location),
+      scheduledAt: typeof r.scheduled_at === "string" ? new Date(r.scheduled_at) : null,
+      namesSentAt: typeof r.names_sent_at === "string" ? new Date(r.names_sent_at) : null,
+      createdBy: String(r.created_by), createdAt: new Date(String(r.created_at)),
+    };
+  }
+  async listOpenDoubts(limit: number): Promise<DoubtRow[]> {
+    const rows = await this.rest<Record<string, unknown>[]>(`doubts?status=eq.aberta&wa_id=not.is.null&order=created_at.asc&limit=${Math.max(1, Math.floor(limit))}`, {}, "listOpenDoubts");
+    return rows.map(SupabaseRepo.doubt);
+  }
+  async getDoubtBySeq(seq: number): Promise<DoubtRow | null> {
+    const rows = await this.rest<Record<string, unknown>[]>(`doubts?seq=eq.${Math.floor(seq)}&limit=1`, {}, "getDoubtBySeq");
+    return rows[0] ? SupabaseRepo.doubt(rows[0]) : null;
+  }
+  async listMatches(limit: number): Promise<MatchDetail[]> {
+    const rows = await this.rest<Record<string, unknown>[]>(`matches?select=*,doubts(seq,text,categories)&order=created_at.desc&limit=${Math.max(1, Math.floor(limit))}`, {}, "listMatches");
+    return rows.map((r) => {
+      const d = (r.doubts ?? {}) as Record<string, unknown>;
+      return { ...SupabaseRepo.match(r), doubtSeq: Number(d.seq ?? 0), doubtText: String(d.text ?? ""), doubtCategories: Array.isArray(d.categories) ? (d.categories as string[]) : [] };
+    });
+  }
+  async getFullNames(waIds: readonly string[]): Promise<Record<string, string>> {
+    const ids = [...new Set(waIds)].filter((w) => /^\d{6,20}$/.test(w));
+    if (ids.length === 0) return {};
+    const rows = await this.rest<Record<string, unknown>[]>(`users?wa_id=in.(${ids.join(",")})&select=wa_id,full_name`, {}, "getFullNames");
+    const out: Record<string, string> = {};
+    for (const r of rows) if (typeof r.full_name === "string") out[String(r.wa_id)] = r.full_name;
+    return out;
+  }
+  async replaceOpenDoubt(waId: string, d: { text: string; categories: string[] }): Promise<boolean> {
+    const last = await this.rest<{ id: string; status: string }[]>(`doubts?wa_id=eq.${encodeURIComponent(waId)}&order=created_at.desc&limit=1&select=id,status`, {}, "replaceOpenDoubt");
+    const row = last[0];
+    if (!row || row.status !== "aberta" || !UUID.test(row.id)) return false;
+    // O filtro status=aberta no PATCH evita trocar uma dúvida que acabou de ser conectada a um mentor.
+    const done = await this.rest<{ id: string }[]>(`doubts?id=eq.${row.id}&status=eq.aberta`, {
+      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ text: d.text, categories: d.categories }),
+    }, "replaceOpenDoubt");
+    return done.length > 0;
+  }
+  async getDoubtById(id: string): Promise<DoubtRow | null> {
+    if (!UUID.test(id)) return null;
+    const rows = await this.rest<Record<string, unknown>[]>(`doubts?id=eq.${id}&limit=1`, {}, "getDoubtById");
+    return rows[0] ? SupabaseRepo.doubt(rows[0]) : null;
+  }
+  async listMentors(limit: number): Promise<MentorRow[]> {
+    const rows = await this.rest<Record<string, unknown>[]>(`mentors_view?order=seq.asc&limit=${Math.max(1, Math.floor(limit))}`, {}, "listMentors");
+    return rows.map(SupabaseRepo.mentor);
+  }
+  async countMembers(): Promise<MemberCounts> {
+    const rows = await this.rest<{ profile_role: string | null }[]>(
+      "users?select=profile_role&registered_at=not.is.null&consent_at=not.is.null&limit=100000", {}, "countMembers");
+    const c: MemberCounts = { mentors: 0, mentees: 0, total: rows.length };
+    for (const r of rows) {
+      if (r.profile_role === "mentor" || r.profile_role === "ambos") c.mentors++;
+      if (r.profile_role === "mentorado" || r.profile_role === "ambos") c.mentees++;
+    }
+    return c;
+  }
+  async getMentorBySeq(seq: number): Promise<MentorRow | null> {
+    const rows = await this.rest<Record<string, unknown>[]>(`mentors_view?seq=eq.${Math.floor(seq)}&limit=1`, {}, "getMentorBySeq");
+    return rows[0] ? SupabaseRepo.mentor(rows[0]) : null;
+  }
+  async createMatch(m: { doubtId: string; mentorWaId: string; menteeWaId: string; createdBy: string; at: Date }): Promise<MatchRow | null> {
+    if (!UUID.test(m.doubtId)) return null;
+    // 1) Reserva a dúvida (só vira 'em_match' se ainda estiver 'aberta': dois admins não pegam a mesma).
+    const taken = await this.rest<unknown[]>(`doubts?id=eq.${m.doubtId}&status=eq.aberta`, {
+      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ status: "em_match" }),
+    }, "createMatch(reserva)");
+    if (taken.length === 0) return null;
+    try {
+      const rows = await this.rest<Record<string, unknown>[]>("matches", {
+        method: "POST", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ id: crypto.randomUUID(), doubt_id: m.doubtId, mentor_wa_id: m.mentorWaId, mentee_wa_id: m.menteeWaId, created_by: m.createdBy, created_at: m.at.toISOString(), updated_at: m.at.toISOString() }),
+      }, "createMatch");
+      return rows[0] ? SupabaseRepo.match(rows[0]) : null;
+    } catch (e) {
+      // Não deixa a dúvida presa em 'em_match' sem match.
+      await this.rest(`doubts?id=eq.${m.doubtId}`, { method: "PATCH", body: JSON.stringify({ status: "aberta" }) }, "createMatch(desfaz)").catch(() => undefined);
+      throw e;
+    }
+  }
+  async getMatchBySeq(seq: number): Promise<MatchRow | null> {
+    const rows = await this.rest<Record<string, unknown>[]>(`matches?seq=eq.${Math.floor(seq)}&limit=1`, {}, "getMatchBySeq");
+    return rows[0] ? SupabaseRepo.match(rows[0]) : null;
+  }
+  async getActiveMatchFor(waId: string): Promise<MatchRow | null> {
+    const w = encodeURIComponent(waId);
+    const rows = await this.rest<Record<string, unknown>[]>(
+      `matches?or=(mentor_wa_id.eq.${w},mentee_wa_id.eq.${w})&status=not.in.(cancelado,confirmado,realizada)&order=created_at.desc&limit=1`, {}, "getActiveMatchFor");
+    return rows[0] ? SupabaseRepo.match(rows[0]) : null;
+  }
+  async getConfirmedMatchFor(waId: string): Promise<MatchRow | null> {
+    const w = encodeURIComponent(waId);
+    const rows = await this.rest<Record<string, unknown>[]>(
+      `matches?or=(mentor_wa_id.eq.${w},mentee_wa_id.eq.${w})&status=eq.confirmado&order=scheduled_at.desc.nullslast,created_at.desc&limit=1`, {}, "getConfirmedMatchFor");
+    return rows[0] ? SupabaseRepo.match(rows[0]) : null;
+  }
+  async listMatchesDueForNames(since: Date, until: Date): Promise<MatchRow[]> {
+    const rows = await this.rest<Record<string, unknown>[]>(
+      `matches?status=eq.confirmado&names_sent_at=is.null&scheduled_at=gt.${encodeURIComponent(since.toISOString())}&scheduled_at=lte.${encodeURIComponent(until.toISOString())}&order=scheduled_at.asc&limit=50`, {}, "listMatchesDueForNames");
+    return rows.map(SupabaseRepo.match);
+  }
+  async claimNamesSent(id: string, at: Date): Promise<boolean> {
+    if (!UUID.test(id)) return false;
+    const rows = await this.rest<Record<string, unknown>[]>(`matches?id=eq.${id}&names_sent_at=is.null`, {
+      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ names_sent_at: at.toISOString() }),
+    }, "claimNamesSent");
+    return rows.length > 0;
+  }
+  async releaseNamesSent(id: string): Promise<void> {
+    if (!UUID.test(id)) return;
+    await this.rest(`matches?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ names_sent_at: null }) }, "releaseNamesSent");
+  }
+  async updateMatch(id: string, patch: MatchPatch, at: Date): Promise<void> {
+    if (!UUID.test(id)) throw new Error("id de match inválido");
+    const body: Record<string, unknown> = { updated_at: at.toISOString() };
+    if (patch.status !== undefined) body.status = patch.status;
+    if (patch.mentorSlots !== undefined) body.mentor_slots = patch.mentorSlots;
+    if (patch.chosenDay !== undefined) body.chosen_day = patch.chosenDay;
+    if (patch.chosenStart !== undefined) body.chosen_start = patch.chosenStart;
+    if (patch.chosenEnd !== undefined) body.chosen_end = patch.chosenEnd;
+    if (patch.location !== undefined) body.location = patch.location;
+    if (patch.scheduledAt !== undefined) body.scheduled_at = patch.scheduledAt ? patch.scheduledAt.toISOString() : null;
+    await this.rest(`matches?id=eq.${id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(body) }, "updateMatch");
+  }
+  async cancelMatch(seq: number, at: Date): Promise<boolean> {
+    const rows = await this.rest<Record<string, unknown>[]>(`matches?seq=eq.${Math.floor(seq)}&status=neq.cancelado`, {
+      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ status: "cancelado", updated_at: at.toISOString() }),
+    }, "cancelMatch");
+    const row = rows[0];
+    if (!row) return false;
+    await this.rest(`doubts?id=eq.${String(row.doubt_id)}`, { method: "PATCH", body: JSON.stringify({ status: "aberta" }) }, "cancelMatch(reabre)");
+    return true;
   }
 
   async setPendingChoices(waIdHash: string, options: PendingChoiceOption[] | null, at: Date): Promise<void> {
@@ -451,6 +618,8 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
       audioSha256: typeof r.audio_sha256 === "string" ? r.audio_sha256 : null,
       audioDeletedAt: r.audio_deleted_at ? new Date(String(r.audio_deleted_at)) : null,
       contestedReason: r.contested_reason === "recusada" || r.contested_reason === "expirada" ? r.contested_reason : null,
+      notifiedCuradoria: r.notified_curadoria && typeof r.notified_curadoria === "object" && !Array.isArray(r.notified_curadoria)
+        ? (r.notified_curadoria as Record<string, string>) : null,
     };
   }
 
@@ -506,6 +675,50 @@ export class SupabaseRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     return Array.isArray(rows) && rows.length > 0;
   }
 
+  async claimCuradoriaNotice(id: string, pessoaId: string, situacao: string): Promise<boolean> {
+    if (!UUID.test(id)) return false;
+    return (await this.rpc<boolean | null>("claim_curadoria_notice", { p_id: id, p_pessoa: pessoaId, p_situacao: situacao })) === true;
+  }
+  async releaseCuradoriaNotice(id: string, pessoaId: string, situacao: string, previous: string | null): Promise<void> {
+    if (!UUID.test(id)) return;
+    await this.rpc("release_curadoria_notice", { p_id: id, p_pessoa: pessoaId, p_situacao: situacao, p_previous: previous });
+  }
+  async requestReview(audioId: string, waIdHash: string, at: Date): Promise<boolean> {
+    if (!UUID.test(audioId) || !/^[0-9a-f]{64}$/.test(waIdHash)) return false;
+    const res = await this.fetchImpl(`${this.url}/rest/v1/revisao_pedidos?on_conflict=audio_id,wa_id_hash`, {
+      method: "POST",
+      headers: this.headers({ Prefer: "resolution=ignore-duplicates,return=representation" }),
+      body: JSON.stringify({ audio_id: audioId, wa_id_hash: waIdHash, created_at: at.toISOString() }),
+    });
+    if (!res.ok) throw new Error(`supabase requestReview falhou: ${res.status}`);
+    const rows = (await res.json()) as unknown[];
+    return Array.isArray(rows) && rows.length > 0;
+  }
+  async listReviewRequests(o: { status?: "aberta" | "atendida"; limit: number }): Promise<ReviewRequest[]> {
+    const rows = await this.getJson<Record<string, unknown>[]>(
+      `revisao_pedidos?select=id,audio_id,wa_id_hash,status,created_at${o.status ? `&status=eq.${o.status}` : ""}&order=created_at.desc&limit=${Math.min(200, Math.max(1, o.limit))}`,
+      "listReviewRequests");
+    return rows.map((r) => ({
+      id: String(r.id), audioId: String(r.audio_id), waIdHash: String(r.wa_id_hash),
+      status: r.status === "atendida" ? "atendida" : "aberta", createdAt: new Date(String(r.created_at)),
+    }));
+  }
+  async requestCertificate(waIdHash: string, at: Date): Promise<boolean> {
+    if (!/^[0-9a-f]{64}$/.test(waIdHash)) return false;
+    const res = await this.fetchImpl(`${this.url}/rest/v1/certificado_pedidos`, {
+      method: "POST", headers: this.headers({ Prefer: "return=minimal" }),
+      body: JSON.stringify({ wa_id_hash: waIdHash, created_at: at.toISOString() }),
+    });
+    if (res.status === 409) return false; // índice único: já existe um pedido aberto desta pessoa
+    if (!res.ok) throw new Error(`supabase requestCertificate falhou: ${res.status}`);
+    return true;
+  }
+  async listCertificateRequests(o: { status?: "aberto" | "emitido"; limit: number }): Promise<CertificateRequest[]> {
+    const rows = await this.getJson<Record<string, unknown>[]>(
+      `certificado_pedidos?select=id,wa_id_hash,status,created_at${o.status ? `&status=eq.${o.status}` : ""}&order=created_at.desc&limit=${Math.min(200, Math.max(1, o.limit))}`,
+      "listCertificateRequests");
+    return rows.map((r) => ({ id: String(r.id), waIdHash: String(r.wa_id_hash), status: r.status === "emitido" ? "emitido" : "aberto", createdAt: new Date(String(r.created_at)) }));
+  }
   // ---- Mentoria v2: parceiro, confirmação e limpeza ----
   private async getJson<T>(path: string, what: string): Promise<T> {
     const res = await this.fetchImpl(`${this.url}/rest/v1/${path}`, { headers: this.headers() });

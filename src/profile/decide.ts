@@ -12,7 +12,7 @@ import type { IncomingMessage } from "../whatsapp/types";
 import { isAllowedDocMime } from "../materials/pipeline";
 import {
   ACADEMIC_LIFE_EXPLANATION, CATEGORIES, CATEGORY_DESCRIPTIONS, CATEGORY_DONE_ID, CATEGORY_ROW_PREFIX,
-  categoryFromRowId, classifyDoubt, parseCategories,
+  categoryFromRowId, classifyDoubt, parseCategories, REMOVE_ROW_PREFIX,
 } from "./categories";
 import { MENU_BUTTON_ID, MENU_FALLBACKS } from "../services/menu";
 import { legalAnswer } from "../rag/legal-faq";
@@ -32,7 +32,7 @@ export type ProfileEffect =
   | { kind: "material" };
 export type ProfileDecision = Decision & { effect?: ProfileEffect };
 
-export const PROFILE_STATES = ["PROFILE_ROLE", "RETURNING_CHOICE", "MENTOR_CATEGORIES", "MENTOR_CATEGORIES_BOTH", "DOUBT_ASK", "DOUBT_TEXT"] as const;
+export const PROFILE_STATES = ["PROFILE_ROLE", "RETURNING_CHOICE", "MENTOR_CATEGORIES", "MENTOR_CATEGORIES_BOTH", "REMOVE_CATEGORIES", "DOUBT_ASK", "DOUBT_TEXT"] as const;
 export const isProfileState = (s: string): boolean => (PROFILE_STATES as readonly string[]).includes(s);
 
 const text = (body: string): Reply => ({ type: "text", text: { body } });
@@ -55,16 +55,31 @@ export function doubtAskReply(c: Content = fallbackContent): Reply {
 export function categoriesListReply(selected: readonly string[] = [], c: Content = fallbackContent, current = false): Reply {
   const chosen = CATEGORIES.filter((x) => selected.includes(x.key));
   const body = current && chosen.length > 0
-    ? `${T.areasCurrent} ${chosen.map((x) => x.label).join(", ")}. Quer incluir mais alguma área? Escolha na lista ou toque em Concluir.`
+    ? `${T.areasCurrent} ${chosen.map((x) => x.label).join(", ")}. Quer incluir mais alguma área? Digite o número da área (ou vários, ex.: *1 3 5*) ou o número de Concluir.`
     : chosen.length === 0
-    ? `Em quais áreas você topa ajudar? Escreva todas de uma vez (ex.: computação, design e liderança, ou "todas") ou escolha uma de cada vez na lista e toque em Concluir.\n\n${ACADEMIC_LIFE_EXPLANATION}`
-    : `Adicionado: ${chosen.map((x) => x.label).join(", ")}. Quer incluir mais alguma área? Escolha na lista ou toque em Concluir.`;
+    ? `Em quais áreas você topa ajudar? Escreva todas de uma vez (ex.: computação, design e liderança, ou "todas") ou digite o número da área na lista (pode mandar vários, ex.: *1 3 5*) e depois o de Concluir.\n\n${ACADEMIC_LIFE_EXPLANATION}`
+    : `Adicionado: ${chosen.map((x) => x.label).join(", ")}. Quer incluir mais alguma área? Digite o número da área (ou vários, ex.: *1 3 5*) ou o número de Concluir.`;
   const rows = CATEGORIES.filter((x) => !selected.includes(x.key)).map((x) => ({
     id: `${CATEGORY_ROW_PREFIX}${x.key}`, title: x.label, description: CATEGORY_DESCRIPTIONS[x.key] ?? "",
   }));
   if (chosen.length > 0) rows.push({ id: CATEGORY_DONE_ID, title: c.text("profileCategoriesDone", T.categoriesDone, 24), description: T.categoriesDoneDesc });
   return buildList(body, c.text("profileCategoriesButton", T.categoriesButton, 20), c.text("profileCategoriesSection", T.categoriesSection, 24), rows);
 }
+/** Lista das áreas atuais para a pessoa escolher qual retirar (sem botão no menu: só abre se ela pedir por texto). */
+export function removeCategoriesReply(selected: readonly string[], c: Content = fallbackContent): Reply {
+  const rows = CATEGORIES.filter((x) => selected.includes(x.key)).map((x) => ({ id: `${REMOVE_ROW_PREFIX}${x.key}`, title: x.label, description: "" }));
+  return buildList(c.text("profileRemoveAsk", T.removeAsk), c.text("profileCategoriesButton", T.categoriesButton, 20), c.text("profileCategoriesSection", T.categoriesSection, 24), rows);
+}
+
+/** "quero retirar uma matéria", "tirar a área de design", "não quero mais dar mentoria de cálculo". */
+export function wantsToRemoveArea(raw: string): boolean {
+  const t = normalizeText(raw);
+  const verb = /\b(retir\w*|tirar|tira|remov\w*|exclu\w*|delet\w*|cancel\w*|apagar|apaga|largar|desistir)\b/;
+  const noun = /\b(materias?|disciplinas?|areas?|assuntos?|opcoes|opcao|topicos?)\b/;
+  if (verb.test(t) && noun.test(t) && !/\b(duvida|mentoria marcada|horario)\b/.test(t)) return true;
+  return /\bnao (quero|vou|posso) mais (dar|oferecer|ministrar|ajudar|ensinar)\b/.test(t);
+}
+
 /** "O que você quer fazer?" para quem já é cadastrado e volta a falar (não presume que há uma dúvida). */
 export function returningChoiceReply(c: Content = fallbackContent, intro = ""): Reply {
   return buildButtons(`${intro}${c.text("profileAskReturning", T.askReturning)}`.slice(0, 1024), [
@@ -91,6 +106,7 @@ function freeTextAfterCompletion(
 ): ProfileDecision | null {
   if (input.type !== "text") return null;
   if (isCourtesy(input.body)) return { replies: [], nextState: user, outcome: "silent" };
+  if (wantsToRemoveArea(input.body)) return startAreaRemoval(user, input.body, counters, now, c, profile?.selected ?? []);
   if (offersToMentor(input.body)) return null;
   const doubt = validDoubt(input.body);
   if (doubt === null || isNoDoubt(input.body) || classifyDoubt(doubt).length === 0) return null;
@@ -98,6 +114,29 @@ function freeTextAfterCompletion(
   const d = decideProfile({ ...user, state: "DOUBT_TEXT", hintSentInState: false }, input, counters, now, c, profile);
   if (!d || d.outcome === "limited") return d ? { replies: [], nextState: user, outcome: "limited" } : null;
   return d;
+}
+
+/** Começa a retirar uma área: se a pessoa já disse qual ("tirar design"), retira direto; senão mostra a lista das atuais. */
+function startAreaRemoval(user: UserState, raw: string, counters: Counters, now: Date, c: Content, selected: readonly string[]): ProfileDecision {
+  const withEffect = (d: Decision, effect: ProfileEffect): ProfileDecision => (d.outcome === "limited" ? d : { ...d, effect });
+  if (selected.length === 0) return finish(user, user, [text(c.text("profileRemoveNone", T.removeNone))], counters, "reply");
+  const named = parseCategories(raw).filter((k) => selected.includes(k));
+  if (named.length > 0) return removeAreas(user, named, counters, now, c, selected, withEffect);
+  return finish(user, moveTo(user, "REMOVE_CATEGORIES", now), [removeCategoriesReply(selected, c)], counters, "reply");
+}
+
+function removeAreas(
+  user: UserState, keys: readonly string[], counters: Counters, now: Date, c: Content, selected: readonly string[],
+  withEffect: (d: Decision, e: ProfileEffect) => ProfileDecision,
+): ProfileDecision {
+  const left = selected.filter((k) => !keys.includes(k));
+  if (left.length === 0) return finish(user, moveTo(user, "COMPLETED", now), [text(c.text("profileRemoveLast", T.removeLast))], counters, "reply");
+  const gone = CATEGORIES.filter((x) => keys.includes(x.key)).map((x) => x.label).join(", ");
+  const now_ = CATEGORIES.filter((x) => left.includes(x.key)).map((x) => x.label).join(", ");
+  return withEffect(
+    finish(user, moveTo(user, "COMPLETED", now), [text(`Pronto, retirei ${gone}. ${T.areasCurrent} ${now_}.`)], counters, "reply"),
+    { kind: "categories", categories: left.slice() },
+  );
 }
 
 /** Pessoa quer ENSINAR ("dar mentoria", "ser mentor", "ensinar"): vai para a escolha de áreas, não para o registro de dúvida. */
@@ -147,10 +186,14 @@ function validDoubt(raw: string): string | null {
 }
 
 function roleFromText(raw: string): ProfileRole | null {
-  const t = normalizeText(raw);
-  if (t === "mentor") return "mentor";
-  if (t === "mentorado" || t === "mentorada") return "mentorado";
-  if (["os dois", "ambos", "as duas", "os 2", "dois"].includes(t)) return "ambos";
+  const t = normalizeText(raw).replace(/^(?:a |o )?(?:opcao|opção|numero|n)\s*/, "").replace(/[).:]+$/, "").trim();
+  // Números da dica ("1 Mentor, 2 Mentorado, 3 Os dois"): valem mesmo sem a lista pendente (expirou ou foi trocada por texto).
+  if (t === "1") return "mentor";
+  if (t === "2") return "mentorado";
+  if (t === "3") return "ambos";
+  if (/\b(os dois|ambos|as duas|os 2|dois|mentor e mentorado|mentorado e mentor)\b/.test(t)) return "ambos";
+  if (/\bmentorad[oa]s?\b/.test(t)) return "mentorado";
+  if (/\bmentor(a|es|as)?\b/.test(t)) return "mentor";
   return null;
 }
 
@@ -261,7 +304,7 @@ export function decideProfile(
       );
     };
 
-    if (input.type === "list_reply") {
+    if (input.type === "list_reply" || input.type === "button_reply") {
       if (input.id === CATEGORY_DONE_ID) return selected.length > 0 ? finishWith(ordered(selected)) : silent();
       const key = categoryFromRowId(input.id);
       if (key === null || selected.includes(key)) return silent(); // linha antiga/desconhecida: silêncio
@@ -275,6 +318,22 @@ export function decideProfile(
     const typed = parseCategories(input.body);
     if (typed.length === 0) return hintOnce(c.text("profileHintCategories", T.hintCategories));
     return finishWith(ordered([...selected, ...typed]));
+  }
+
+  if (user.state === "REMOVE_CATEGORIES") {
+    let keys: string[];
+    if (input.type === "list_reply" || input.type === "button_reply") {
+      const k = input.id.startsWith(REMOVE_ROW_PREFIX) ? categoryFromRowId(`cat_${input.id.slice(REMOVE_ROW_PREFIX.length)}`) : null;
+      if (k === null) return silent();
+      keys = [k];
+    } else if (input.type === "text") {
+      // Números valem pela posição na lista mostrada (só as áreas atuais), nomes valem pelo nome.
+      const shown = CATEGORIES.filter((x) => selected.includes(x.key));
+      const num = normalizeText(input.body).match(/^\d$/);
+      keys = num ? [shown[Number(num[0]) - 1]?.key].filter((k): k is string => !!k) : parseCategories(input.body).filter((k) => selected.includes(k));
+      if (keys.length === 0) return hintOnce(c.text("profileHintRemove", T.hintRemove));
+    } else return silent();
+    return removeAreas(user, keys, counters, now, c, selected, withEffect);
   }
 
   if (user.state === "DOUBT_ASK") {

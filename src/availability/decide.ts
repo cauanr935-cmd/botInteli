@@ -35,7 +35,7 @@ export function decideAvailability(
   const silent = (): AvailabilityDecision => ({ replies: [], nextState: user, outcome: "silent" });
 
   // Entrada: serviço "Horários" escolhido no menu.
-  if (user.state === "MENU" && input.type === "list_reply" && findService(c, input.id)?.id === AVAILABILITY_SERVICE_ID) {
+  if (user.state === "MENU" && (input.type === "list_reply" || input.type === "button_reply") && findService(c, input.id)?.id === AVAILABILITY_SERVICE_ID) {
     return finish(user, moveTo(user, "AVAILABILITY_TEXT", now), [REPLIES.askAvailability(c)], counters, "reply");
   }
 
@@ -60,9 +60,9 @@ export function decideAvailability(
   } else if (looseAvailability(input.body) === null) {
     return hint();
   }
-  const base = c.text("availabilitySaved", "Horários registrados! Para voltar ao início, toque em Menu.");
+  const base = c.text("availabilitySaved", "Horários registrados! Para voltar ao início, envie *menu*.");
   const body = slots
-    ? `Anotei seus horários livres:\n${summarizeSlots(slots)}\n\nSe algo estiver errado, escolha Horários de novo e envie outra vez. Para voltar ao início, toque em Menu.`
+    ? `Anotei seus horários livres:\n${summarizeSlots(slots)}\n\nSe algo estiver errado, escolha Horários de novo e envie outra vez. Para voltar ao início, envie *menu*.`
     : base;
   const saved: Reply = buildButtons(body.slice(0, 1024), [
     { id: MENU_BUTTON_ID, title: c.text("menuButtonLabel", MENU_FALLBACKS.menuButtonLabel, 20) },

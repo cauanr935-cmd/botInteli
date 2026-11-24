@@ -608,3 +608,179 @@ create table if not exists pending_choices (
   created_at timestamptz not null default now()
 );
 alter table pending_choices enable row level security;
+
+-- ===== supabase/migrations/0018_matching.sql =====
+-- Matching manual mentorado <-> mentor (feito por um admin pelo WhatsApp). Requer 0001-0017.
+-- Mentores continuam sendo `users` (profile_role mentor/ambos); a view mentors_view só os expõe com id curto.
+
+-- Dúvidas: dono em texto (para o bot escrever ao mentorado), status e id curto legível ("D12").
+alter table doubts add column if not exists wa_id text;
+alter table doubts add column if not exists status text not null default 'aberta';
+alter table doubts add column if not exists seq bigint generated always as identity;
+alter table doubts drop constraint if exists doubts_status_check;
+alter table doubts add constraint doubts_status_check check (status in ('aberta', 'em_match', 'concluida', 'cancelada'));
+create unique index if not exists doubts_seq_idx on doubts (seq);
+create index if not exists doubts_status_idx on doubts (status, created_at);
+
+-- Id curto do mentor ("M3") para o comando /match.
+alter table users add column if not exists seq bigint generated always as identity;
+create unique index if not exists users_seq_idx on users (seq);
+
+create or replace view mentors_view as
+  select seq, wa_id, wa_id_hash, full_name, mentor_categories, availability_slots, availability_at
+  from users
+  where profile_role in ('mentor', 'ambos') and registered_at is not null and consent_at is not null;
+
+-- Matches: um por dúvida. `status` guarda o andamento do fluxo automático.
+create table if not exists matches (
+  id uuid primary key,
+  seq bigint generated always as identity,
+  doubt_id uuid not null references doubts (id),
+  mentor_wa_id text not null,
+  mentee_wa_id text not null,
+  status text not null default 'aguardando_mentor'
+    check (status in ('aguardando_mentor', 'aguardando_mentorado', 'aguardando_local', 'confirmado', 'sem_horario', 'cancelado')),
+  mentor_slots jsonb check (mentor_slots is null or jsonb_typeof(mentor_slots) = 'array'),
+  chosen_day text,
+  chosen_start text,
+  chosen_end text,
+  location text check (location is null or char_length(location) between 1 and 200),
+  created_by text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists matches_seq_idx on matches (seq);
+create index if not exists matches_mentor_idx on matches (mentor_wa_id, status);
+create index if not exists matches_mentee_idx on matches (mentee_wa_id, status);
+-- Só um match ativo por dúvida.
+create unique index if not exists matches_one_active_per_doubt on matches (doubt_id) where status <> 'cancelado';
+
+alter table matches enable row level security;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on table matches from anon';
+    execute 'revoke all on mentors_view from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke all on table matches from authenticated';
+    execute 'revoke all on mentors_view from authenticated';
+  end if;
+end $$;
+-- Corrige o nome do fundador no menu e na resposta do Contato: é "Cauan" (a migração 0011 gravou "Cauã"). Idempotente.
+update services set description = 'Fale com o Cauan, da Be My Mentor' where id = 'contato';
+insert into canned_responses (key, text) values
+  ('service_contato', 'Fale com o Cauan, um dos fundadores da Be My Mentor (junto com o Bruno), pelo WhatsApp: 88 99289-5332 (https://wa.me/5588992895332).')
+on conflict (key) do update set text = excluded.text, updated_at = now();
+-- Novo serviço no menu: "Marcar nova mentoria" (abre o pedido de mentoria: o que precisa -> horários -> mentor). Idempotente.
+insert into services (id, title, description, requires_audio, active, sort_order) values
+  ('nova_mentoria', 'Marcar nova mentoria', 'Peça um mentor para te ajudar', false, true, 10)
+on conflict (id) do update set title = excluded.title, description = excluded.description,
+  requires_audio = excluded.requires_audio, active = excluded.active, sort_order = excluded.sort_order;
+
+-- ===== supabase/migrations/0021_curadoria.sql =====
+-- Aviso da decisão da equipe (curadoria): o notebook reenvia o resultado sempre que o resumo muda; o bot só avisa
+-- a pessoa quando a situação dela muda para "aprovada" ou "recusada", uma vez por mudança. Idempotente.
+-- Última situação já notificada, por pessoa: {"<pessoa_id>": "aprovada" | "recusada" | "aguardando_equipe"}.
+alter table audios add column if not exists notified_curadoria jsonb
+  check (notified_curadoria is null or jsonb_typeof(notified_curadoria) = 'object');
+
+-- Reserva atômica do aviso: grava a nova situação só se ela ainda não foi notificada. true = quem chamou deve enviar
+-- (dois reenvios simultâneos do mesmo resumo não mandam duas mensagens).
+create or replace function claim_curadoria_notice(p_id uuid, p_pessoa text, p_situacao text)
+returns boolean language plpgsql as $$
+declare n integer;
+begin
+  update audios
+     set notified_curadoria = jsonb_set(coalesce(notified_curadoria, '{}'::jsonb), array[p_pessoa], to_jsonb(p_situacao), true)
+   where id = p_id and coalesce(notified_curadoria ->> p_pessoa, '') <> p_situacao;
+  get diagnostics n = row_count;
+  return n > 0;
+end $$;
+
+-- Desfaz a reserva quando o envio falhou (só se ninguém a mudou depois): a próxima reenvio do resumo tenta de novo.
+create or replace function release_curadoria_notice(p_id uuid, p_pessoa text, p_situacao text, p_previous text)
+returns boolean language plpgsql as $$
+declare n integer;
+begin
+  update audios
+     set notified_curadoria = case when p_previous is null then notified_curadoria - p_pessoa
+                                   else jsonb_set(notified_curadoria, array[p_pessoa], to_jsonb(p_previous), true) end
+   where id = p_id and notified_curadoria ->> p_pessoa = p_situacao;
+  get diagnostics n = row_count;
+  return n > 0;
+end $$;
+
+-- Pedidos de revisão humana (botão "Pedir revisão" da mensagem de recusa; LGPD art. 20). Um por mentoria e pessoa.
+-- Só o hash da pessoa (nunca telefone). A equipe atende pelo notebook (mentorias decidir --forcar).
+create table if not exists revisao_pedidos (
+  id uuid primary key default gen_random_uuid(),
+  audio_id uuid not null references audios (id) on delete cascade,
+  wa_id_hash text not null,
+  status text not null default 'aberta' check (status in ('aberta', 'atendida')),
+  created_at timestamptz not null default now(),
+  unique (audio_id, wa_id_hash)
+);
+create index if not exists revisao_pedidos_status_idx on revisao_pedidos (status, created_at);
+
+alter table revisao_pedidos enable row level security;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on table revisao_pedidos from anon';
+    execute 'revoke execute on function claim_curadoria_notice(uuid, text, text) from anon';
+    execute 'revoke execute on function release_curadoria_notice(uuid, text, text, text) from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke all on table revisao_pedidos from authenticated';
+    execute 'revoke execute on function claim_curadoria_notice(uuid, text, text) from authenticated';
+    execute 'revoke execute on function release_curadoria_notice(uuid, text, text, text) from authenticated';
+  end if;
+end $$;
+
+-- ===== supabase/migrations/0019_nome_cauan.sql =====
+-- Corrige o nome do fundador no menu e na resposta do Contato: é "Cauan" (a migração 0011 gravou "Cauã"). Idempotente.
+update services set description = 'Fale com o Cauan, da Be My Mentor' where id = 'contato';
+insert into canned_responses (key, text) values
+  ('service_contato', 'Fale com o Cauan, um dos fundadores da Be My Mentor (junto com o Bruno), pelo WhatsApp: 88 99289-5332 (https://wa.me/5588992895332).')
+on conflict (key) do update set text = excluded.text, updated_at = now();
+
+-- ===== supabase/migrations/0020_nova_mentoria.sql =====
+-- Novo serviço no menu: "Marcar nova mentoria" (abre o pedido de mentoria: o que precisa -> horários -> mentor). Idempotente.
+insert into services (id, title, description, requires_audio, active, sort_order) values
+  ('nova_mentoria', 'Marcar nova mentoria', 'Peça um mentor para te ajudar', false, true, 10)
+on conflict (id) do update set title = excluded.title, description = excluded.description,
+  requires_audio = excluded.requires_audio, active = excluded.active, sort_order = excluded.sort_order;
+
+-- ===== supabase/migrations/0022_match_v2.sql =====
+-- Matching v2: o mentor aceita ou recusa antes dos horários; a mentoria tem horário MARCADO (scheduled_at, em UTC) e os
+-- nomes só são enviados 5 minutos antes (names_sent_at = já enviou). Depois do áudio registrado o match vira 'realizada'.
+-- Requer 0018. Idempotente.
+alter table matches add column if not exists scheduled_at timestamptz;
+alter table matches add column if not exists names_sent_at timestamptz;
+alter table matches drop constraint if exists matches_status_check;
+alter table matches add constraint matches_status_check
+  check (status in ('aguardando_mentor', 'aguardando_mentorado', 'aguardando_local', 'confirmado', 'realizada', 'sem_horario', 'cancelado'));
+create index if not exists matches_scheduled_idx on matches (scheduled_at) where status = 'confirmado' and names_sent_at is null;
+
+-- ===== supabase/migrations/0023_certificado_pedidos.sql =====
+-- Pedidos de certificado de horas (mentor e mentorado pedem pelo WhatsApp; a equipe emite pelo sistema). Um pedido ABERTO por
+-- pessoa: repetir o pedido não cria outro. Só o hash da pessoa (nunca telefone). Idempotente.
+create table if not exists certificado_pedidos (
+  id uuid primary key default gen_random_uuid(),
+  wa_id_hash text not null,
+  status text not null default 'aberto' check (status in ('aberto', 'emitido')),
+  created_at timestamptz not null default now()
+);
+create unique index if not exists certificado_pedidos_um_aberto on certificado_pedidos (wa_id_hash) where status = 'aberto';
+
+alter table certificado_pedidos enable row level security;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on table certificado_pedidos from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke all on table certificado_pedidos from authenticated';
+  end if;
+end $$;

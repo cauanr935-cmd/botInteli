@@ -2,7 +2,7 @@ import { foldName } from "../mentoria/parse";
 import { FIELD_KEYS } from "../registration/fields";
 import type { Service } from "../services/content";
 import type {
-  AudioRecord, BudgetRow, ConversationFields, LoginAttemptRepo, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingChoiceOption, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome,
+  AudioRecord, BudgetRow, ConversationFields, LoginAttemptRepo, MatchDetail, MatchPatch, MatchRow, MatchingRepo, DoubtRow, MemberCounts, MentorRow, Slot, MentoriaCompletion, MentoriaDraft, MentoriaRepo, MentoriaRow, PartnerAnswerOutcome, PendingChoiceOption, PendingConfirmation, PersonRef, RegistrationPatch, RegistrationRecord, StoredConversation, ManualLock, OutboundLogEntry, PricingUpdate, Repo, ReserveOutcome, ReviewRequest, CertificateRequest,
 } from "./repo";
 
 export interface MemoryOutboundRow extends OutboundLogEntry {
@@ -12,7 +12,7 @@ export interface MemoryOutboundRow extends OutboundLogEntry {
   statusUpdatedAt?: Date;
 }
 
-export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
+export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo, MatchingRepo {
   readonly processed = new Map<string, Date>();
   readonly users = new Map<string, Date>();
   readonly budgets = new Map<string, BudgetRow & { warned: boolean; tripLogged: boolean }>();
@@ -25,6 +25,9 @@ export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (this.processed.has(key)) return false;
     this.processed.set(key, receivedAt);
     return true;
+  }
+  async unseenMessageKeys(keys: readonly string[]): Promise<string[]> {
+    return keys.filter((k) => !this.processed.has(k));
   }
   async unclaimMessage(key: string): Promise<void> {
     this.processed.delete(key);
@@ -121,12 +124,122 @@ export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (!ok) throw new Error("sem consentimento");
     this.materials.push({ ...m });
   }
-  readonly doubts: { waIdHash: string; text: string; categories: string[]; at: Date }[] = [];
-  async insertDoubt(_waId: string, d: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void> {
+  readonly doubts: { id: string; seq: number; waId: string; status: DoubtRow["status"]; waIdHash: string; text: string; categories: string[]; at: Date }[] = [];
+  async insertDoubt(waId: string, d: { waIdHash: string; text: string; categories: string[]; at: Date }): Promise<void> {
     // Mesma regra do banco (R6): sem consentimento, nada é guardado.
     const ok = [...this.registrations.values()].some((r) => r.waIdHash === d.waIdHash && r.consentAt !== null);
     if (!ok) throw new Error("sem consentimento");
-    this.doubts.push({ ...d });
+    this.doubts.push({ ...d, id: crypto.randomUUID(), seq: this.doubts.length + 1, waId, status: "aberta" });
+  }
+
+  // ---- Matching manual ----
+  readonly matches: MatchRow[] = [];
+  private toDoubt(d: (typeof this.doubts)[number]): DoubtRow {
+    return { id: d.id, seq: d.seq, waId: d.waId, text: d.text, categories: [...d.categories], status: d.status, createdAt: d.at };
+  }
+  async listOpenDoubts(limit: number): Promise<DoubtRow[]> {
+    return this.doubts.filter((d) => d.status === "aberta").sort((a, b) => a.at.getTime() - b.at.getTime()).slice(0, limit).map((d) => this.toDoubt(d));
+  }
+  async getDoubtBySeq(seq: number): Promise<DoubtRow | null> {
+    const d = this.doubts.find((x) => x.seq === seq);
+    return d ? this.toDoubt(d) : null;
+  }
+  async listMatches(limit: number): Promise<MatchDetail[]> {
+    return [...this.matches].reverse().slice(0, limit).map((x) => {
+      const d = this.doubts.find((y) => y.id === x.doubtId);
+      return { ...x, doubtSeq: d?.seq ?? 0, doubtText: d?.text ?? "", doubtCategories: d ? [...d.categories] : [] };
+    });
+  }
+  async getFullNames(waIds: readonly string[]): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const w of waIds) { const n = this.registrations.get(w)?.values.full_name; if (n) out[w] = n; }
+    return out;
+  }
+  async replaceOpenDoubt(waId: string, d: { text: string; categories: string[] }): Promise<boolean> {
+    const mine = this.doubts.filter((x) => x.waId === waId).sort((a, b) => b.at.getTime() - a.at.getTime() || b.seq - a.seq)[0];
+    if (!mine || mine.status !== "aberta") return false;
+    mine.text = d.text;
+    mine.categories = [...d.categories];
+    return true;
+  }
+  async getDoubtById(id: string): Promise<DoubtRow | null> {
+    const d = this.doubts.find((x) => x.id === id);
+    return d ? this.toDoubt(d) : null;
+  }
+  private mentorRows(): MentorRow[] {
+    // O id curto é a posição na ordem de cadastro (a ordem de inserção do Map).
+    const out: MentorRow[] = [];
+    let seq = 0;
+    for (const [waId, r] of this.registrations) {
+      seq++;
+      if ((r.profileRole === "mentor" || r.profileRole === "ambos") && r.registeredAt && r.consentAt) {
+        out.push({ seq, waId, name: r.values.full_name ?? null, categories: [...(r.mentorCategories ?? [])], slots: [...(this.availabilities.get(waId)?.slots ?? [])] as Slot[] });
+      }
+    }
+    return out;
+  }
+  async listMentors(limit: number): Promise<MentorRow[]> { return this.mentorRows().slice(0, limit); }
+  async countMembers(): Promise<MemberCounts> {
+    const c: MemberCounts = { mentors: 0, mentees: 0, total: 0 };
+    for (const r of this.registrations.values()) {
+      if (!r.registeredAt || !r.consentAt) continue;
+      c.total++;
+      if (r.profileRole === "mentor" || r.profileRole === "ambos") c.mentors++;
+      if (r.profileRole === "mentorado" || r.profileRole === "ambos") c.mentees++;
+    }
+    return c;
+  }
+  async getMentorBySeq(seq: number): Promise<MentorRow | null> { return this.mentorRows().find((m) => m.seq === seq) ?? null; }
+  async createMatch(m: { doubtId: string; mentorWaId: string; menteeWaId: string; createdBy: string; at: Date }): Promise<MatchRow | null> {
+    const d = this.doubts.find((x) => x.id === m.doubtId);
+    if (!d || d.status !== "aberta") return null; // check-and-set síncrono: dois admins não pegam a mesma dúvida
+    d.status = "em_match";
+    const row: MatchRow = {
+      id: crypto.randomUUID(), seq: this.matches.length + 1, doubtId: m.doubtId, mentorWaId: m.mentorWaId, menteeWaId: m.menteeWaId,
+      status: "aguardando_mentor", mentorSlots: null, chosenDay: null, chosenStart: null, chosenEnd: null, location: null, scheduledAt: null, namesSentAt: null, createdBy: m.createdBy, createdAt: m.at,
+    };
+    this.matches.push(row);
+    return { ...row };
+  }
+  async getMatchBySeq(seq: number): Promise<MatchRow | null> {
+    const r = this.matches.find((x) => x.seq === seq);
+    return r ? { ...r } : null;
+  }
+  async getActiveMatchFor(waId: string): Promise<MatchRow | null> {
+    const r = [...this.matches].reverse().find((x) => (x.mentorWaId === waId || x.menteeWaId === waId) && x.status !== "cancelado" && x.status !== "confirmado" && x.status !== "realizada");
+    return r ? { ...r } : null;
+  }
+  async getConfirmedMatchFor(waId: string): Promise<MatchRow | null> {
+    const r = [...this.matches].reverse().find((x) => (x.mentorWaId === waId || x.menteeWaId === waId) && x.status === "confirmado");
+    return r ? { ...r } : null;
+  }
+  async listMatchesDueForNames(since: Date, until: Date): Promise<MatchRow[]> {
+    return this.matches
+      .filter((x) => x.status === "confirmado" && x.namesSentAt === null && x.scheduledAt !== null && x.scheduledAt > since && x.scheduledAt <= until)
+      .map((x) => ({ ...x }));
+  }
+  async claimNamesSent(id: string, at: Date): Promise<boolean> {
+    const r = this.matches.find((x) => x.id === id);
+    if (!r || r.namesSentAt !== null) return false;
+    r.namesSentAt = at;
+    return true;
+  }
+  async releaseNamesSent(id: string): Promise<void> {
+    const r = this.matches.find((x) => x.id === id);
+    if (r) r.namesSentAt = null;
+  }
+  async updateMatch(id: string, patch: MatchPatch, _at: Date): Promise<void> {
+    const r = this.matches.find((x) => x.id === id);
+    if (!r) throw new Error("match inexistente");
+    Object.assign(r, patch);
+  }
+  async cancelMatch(seq: number, _at: Date): Promise<boolean> {
+    const r = this.matches.find((x) => x.seq === seq);
+    if (!r || r.status === "cancelado") return false;
+    r.status = "cancelado";
+    const d = this.doubts.find((x) => x.id === r.doubtId);
+    if (d) d.status = "aberta";
+    return true;
   }
   // ---- Etapa 5: conteúdo ----
   /** Serviços ATIVOS (testes preenchem). */
@@ -271,6 +384,7 @@ export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
       ocorreuEm: a.ocorreuEm ?? null, partnerHash: a.partnerWaIdHash ?? null,
       partnerConfirmedAt: a.partnerConfirmedAt ?? null, partnerRejectedAt: a.partnerRejectedAt ?? null,
       audioSha256: a.audioSha256 ?? null, audioDeletedAt: a.audioDeletedAt ?? null, contestedReason: a.contestedReason ?? null,
+      notifiedCuradoria: a.notifiedCuradoria ?? null,
     };
   }
   async listMentorias(o: { pending?: boolean; limit: number; before?: Date }): Promise<MentoriaRow[]> {
@@ -287,6 +401,40 @@ export class MemoryRepo implements Repo, MentoriaRepo, LoginAttemptRepo {
     if (!this.audios.get(id)?.mentoria) return false;
     this.analysis.set(id, { result, at });
     return true;
+  }
+  async claimCuradoriaNotice(id: string, pessoaId: string, situacao: string): Promise<boolean> {
+    const a = this.audios.get(id);
+    if (!a?.mentoria || a.notifiedCuradoria?.[pessoaId] === situacao) return false;
+    this.audios.set(id, { ...a, notifiedCuradoria: { ...(a.notifiedCuradoria ?? {}), [pessoaId]: situacao } });
+    return true;
+  }
+  async releaseCuradoriaNotice(id: string, pessoaId: string, situacao: string, previous: string | null): Promise<void> {
+    const a = this.audios.get(id);
+    if (!a?.notifiedCuradoria || a.notifiedCuradoria[pessoaId] !== situacao) return;
+    const next = { ...a.notifiedCuradoria };
+    if (previous === null) delete next[pessoaId]; else next[pessoaId] = previous;
+    this.audios.set(id, { ...a, notifiedCuradoria: next });
+  }
+  readonly certificateRequests: CertificateRequest[] = [];
+  async requestCertificate(waIdHash: string, at: Date): Promise<boolean> {
+    if (this.certificateRequests.some((r) => r.waIdHash === waIdHash && r.status === "aberto")) return false;
+    this.certificateRequests.push({ id: crypto.randomUUID(), waIdHash, status: "aberto", createdAt: at });
+    return true;
+  }
+  async listCertificateRequests(o: { status?: "aberto" | "emitido"; limit: number }): Promise<CertificateRequest[]> {
+    return this.certificateRequests.filter((r) => !o.status || r.status === o.status)
+      .sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime()).slice(0, o.limit).map((r) => ({ ...r }));
+  }
+  readonly reviews: ReviewRequest[] = [];
+  async requestReview(audioId: string, waIdHash: string, at: Date): Promise<boolean> {
+    if (!this.audios.get(audioId)?.mentoria) return false;
+    if (this.reviews.some((r) => r.audioId === audioId && r.waIdHash === waIdHash)) return false;
+    this.reviews.push({ id: crypto.randomUUID(), audioId, waIdHash, status: "aberta", createdAt: at });
+    return true;
+  }
+  async listReviewRequests(o: { status?: "aberta" | "atendida"; limit: number }): Promise<ReviewRequest[]> {
+    return this.reviews.filter((r) => !o.status || r.status === o.status)
+      .sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime()).slice(0, o.limit).map((r) => ({ ...r }));
   }
   // ---- Mentoria v2: parceiro, confirmação e limpeza ----
   private person(waId: string, r: RegistrationRecord & { waIdHash?: string }): PersonRef | null {

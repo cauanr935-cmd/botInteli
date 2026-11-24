@@ -22,6 +22,8 @@ export interface OutboundMessage {
   type: string;
   text?: { body: string; preview_url?: boolean };
   interactive?: unknown;
+  /** type "sticker": base64 (ou URL) de um .webp. */
+  sticker?: string;
   [key: string]: unknown;
 }
 
@@ -104,7 +106,7 @@ export async function sendGuarded(message: OutboundMessage, ctx: SendContext): P
       );
       if (r.ok) {
         wamid = r.messageId;
-        pending = r.pending ? { options: r.pending } : null;
+        pending = r.pending === undefined ? undefined : r.pending ? { options: r.pending } : null;
       } else {
         errorCode = r.code;
         ctx.logger.log("warn", "whatsapp_send_failed", { status: r.httpStatus ?? null, code: r.code, messageType: message.type, detail: r.detail ?? "" });
@@ -176,4 +178,9 @@ export interface MediaClient {
   getInfo(mediaId: string): Promise<MediaInfo>;
   /** Baixa o conteúdo. Recusa acima de `maxBytes`. */
   download(url: string, maxBytes: number): Promise<DownloadResult>;
+  /**
+   * Abre o arquivo que a Evolution já guardou no S3 (R2) como stream, para copiar sem carregar na memória.
+   * Só aceita https e hosts da lista MEDIA_URL_HOSTS. Ausente ou `ok:false` = usa o download normal (`download`).
+   */
+  openStream?(url: string): Promise<{ ok: true; body: ReadableStream<Uint8Array>; size?: number } | { ok: false }>;
 }

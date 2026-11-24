@@ -126,7 +126,7 @@ export const PAGE_HTML = String.raw`<!doctype html>
   <button id="mic" title="Gravar áudio">&#127908;</button>
   <button id="send" title="Enviar">&#10148;</button>
 </footer>
-<input id="pick" type="file" accept="audio/*,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.amr,.flac,.webm,.3gp,.aiff,.wma" hidden>
+<input id="pick" type="file" accept="audio/*,video/mp4,video/mpeg,video/webm,video/ogg,.mp3,.mpeg,.mpg,.mpga,.mp2,.m4a,.mp4,.m4v,.ogg,.oga,.ogv,.opus,.wav,.aac,.amr,.webm,.flac,.3gp,.aif,.aiff,.wma" hidden>
 <input id="pickDoc" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" hidden>
 <div id="sheet"><div class="box" id="rows"></div></div>
 <script>

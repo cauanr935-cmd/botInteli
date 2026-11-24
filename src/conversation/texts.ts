@@ -14,20 +14,20 @@ export const TEXTS = {
   welcome:
     "Olá! Que bom ter você aqui. Vamos fazer o seu cadastro rápido para liberar os serviços. Para parar de receber mensagens, envie *sair*.",
   registrationDone:
-    "Cadastro concluído! Escolha um serviço no menu. Para parar de receber mensagens, envie *sair*.",
+    "Cadastro concluído! Digite o número do serviço no menu. Para parar de receber mensagens, envie *sair*.",
   menu: MENU_FALLBACKS.menu,
   audioInstruction: "Anexe o arquivo de áudio da mentoria. Para voltar ao início, envie *menu*.",
   optOutConfirm: "Tudo bem, você não receberá mais mensagens. Se mudar de ideia, envie *voltar*.",
   hintNew: "Para começar, envie *oi*.",
   hintRegistration: "Para continuar, preencha o formulário de cadastro que enviamos acima.",
-  hintMenu: "Escolha um serviço no menu acima ou envie *menu* para ver as opções.",
+  hintMenu: "Digite o número de um serviço do menu acima ou envie *menu* para ver as opções.",
   hintAudio: "Anexe o arquivo de áudio da mentoria ou envie *menu* para voltar ao início.",
   audioInvalid: "Não consegui usar esse arquivo. Envie um áudio (nota de voz ou arquivo de áudio) menor, ou envie *menu* para voltar ao início.",
   audioFailed: "Não consegui guardar o seu áudio agora. Envie o áudio de novo ou envie *menu* para voltar ao início.",
   audioResultFallback: "Análise concluída.",
   askAvailability: "Informe os seus dias e horários livres para mentorias (ex.: segunda e quarta, 14h às 18h). Para cancelar, envie *menu*.",
   hintAvailability: "Não consegui identificar os dias e horários. Escreva, por exemplo: segunda e quarta, das 14h às 18h. Ou envie *menu* para cancelar.",
-  availabilitySaved: "Horários registrados! Para voltar ao início, toque em Menu.",
+  availabilitySaved: "Horários registrados! Para voltar ao início, envie *menu*.",
   resumeNew: "Que bom ter você de volta! Para começar, envie *oi*.",
 } as const;
 

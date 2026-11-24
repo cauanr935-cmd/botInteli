@@ -1,5 +1,7 @@
 # Kit do bot de WhatsApp para o Claude Code
 
+[![vibebook: sala do projeto](https://vibebook.dev/badge.svg)](https://vibebook.dev/b/fb48bffbbbff)
+
 Este pacote faz o Claude Code construir o bot sozinho, em 9 etapas. Cada etapa é escrita por um subagente (implementador) e conferida por outro, independente (verificador), que aprova ou reprova com a lista do que está errado. O próprio Claude Code orquestra o vai e volta: você cola um prompt e acompanha.
 
 ## O que tem aqui

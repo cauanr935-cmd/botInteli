@@ -16,11 +16,15 @@ import { CONSENT_BUTTON_ID, REG_TEXTS } from "../registration/texts";
 import { parseCategories } from "../profile/categories";
 import { parseScheduleText } from "../schedule/parse";
 import { metaAnswer, metaKind } from "../axo/meta";
+import { selfAnswer, selfKind, type SelfData } from "../axo/self";
 import { legalAnswer } from "../rag/legal-faq";
 import { buildCorpus, isLegalTopic, isWhyQuestion, MIN_SCORE, retrieve, whyWeAsk, type Chunk, type Hit } from "../rag/corpus";
 
 /** Etapas em que a pergunta pode ser respondida. Fora daqui o texto livre é a resposta esperada (dúvida, assunto, curiosidades...). */
-const QA_STATE = /^(NEW|AWAIT_REGISTRATION|REG_CONSENT|REG_NAME_CONFIRM|REG_FIELD_.+|PROFILE_ROLE|MENTOR_CATEGORIES(_BOTH)?|DOUBT_ASK|SCHED_(DAYS|HOURS)_.+|RETURNING_CHOICE|COMPLETED|MENU|AWAIT_AUDIO)$/;
+const QA_STATE = /^(NEW|AWAIT_REGISTRATION|REG_CONSENT|REG_NAME_CONFIRM|REG_AGE|REG_FIELD_.+|PROFILE_ROLE|MENTOR_CATEGORIES(_BOTH)?|DOUBT_ASK|SCHED_(DAYS|HOURS|CONFIRM)_.+|RETURNING_CHOICE|COMPLETED|MENU|AWAIT_AUDIO|MENT_ROLE|MENT_DATE|SWITCH_DOUBT)$/;
+/** Etapas de texto livre do registro de mentoria: só perguntas sobre a Be My Mentor / os fundadores são respondidas aqui. */
+const MENT_FREE = /^(MENT_SUBJECT|MENT_DATE_TEXT|MENT_PARTNER)$/;
+const ABOUT_BMM = /\b(be my mentor|bmm|fundador(es|a|as)?|founders?|criador(es)?|cauan|bruno|inteli)\b/;
 /** Etapas antes do aceite: a mensagem da pessoa NÃO vai para a IA (promessa dos Termos: a IA só vê o texto depois do aceite). */
 export const PRE_CONSENT = /^(NEW|AWAIT_REGISTRATION|REG_CONSENT)$/;
 
@@ -35,9 +39,10 @@ export function isQuestion(text: string): boolean {
 export function shouldAnswer(text: string, state: string): boolean {
   // Descrevendo a dúvida: o texto livre é a dúvida, MAS pergunta sobre o bot/anexo/plataforma não é dúvida acadêmica.
   const metaInDoubt = state === "DOUBT_TEXT" && metaKind(text) !== null;
-  if (!QA_STATE.test(state) && !metaInDoubt && !(state === "REG_PROFILE_AUDIO" && isWhyQuestion(text))) return false;
-  if (!metaInDoubt && !isQuestion(text)) return false;
-  if (intentsOf(text).size > 0) return false;
+  const aboutBmm = MENT_FREE.test(state) && ABOUT_BMM.test(normalizeText(text));
+  if (!QA_STATE.test(state) && !metaInDoubt && !aboutBmm && !(state === "REG_PROFILE_AUDIO" && isWhyQuestion(text))) return false;
+  if (!metaInDoubt && !isQuestion(text) && selfKind(text) === null) return false;
+  if (intentsOf(text).size > 0 && selfKind(text) === null) return false;
   if (state.startsWith("SCHED_")) { const p = parseScheduleText(text); if (p.slots.length > 0 || p.loose.length > 0) return false; }
   if (state.startsWith("MENTOR_CATEGORIES") && parseCategories(text).length > 0) return false;
   return true;
@@ -73,9 +78,12 @@ function localAnswer(hits: readonly Hit[]): string | null {
 }
 
 export async function planAnswer(
-  text: string, state: string, deps: { agent?: IntentAgent | undefined; recent?: readonly string[] | undefined },
+  text: string, state: string, deps: { agent?: IntentAgent | undefined; recent?: readonly string[] | undefined; self?: (() => Promise<SelfData | null>) | undefined },
 ): Promise<FaqPlan | "silent" | null> {
   const q = text.replace(/\s+/g, " ").trim().slice(0, 500);
+  // "Quem é você?" e perguntas sobre os dados DA PRÓPRIA pessoa: texto fixo, sem IA; dado só do número que escreveu (src/axo/self.ts).
+  const sk = selfKind(q);
+  if (sk) return { answer: selfAnswer(sk, sk === "who_are_you" || sk === "others_data" ? null : await (deps.self?.() ?? Promise.resolve(null)).catch(() => null)), withLink: false };
   // LGPD, uso dos dados e privacidade: resposta pronta, em qualquer etapa e ANTES do aceite (a pessoa precisa de base para decidir).
   // Sem IA e sem enviar o texto dela para fora; vem dos Termos e da Política, e o link vai junto.
   const meta = metaAnswer(q);

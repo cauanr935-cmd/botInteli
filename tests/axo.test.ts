@@ -51,12 +51,12 @@ describe("detector de temas sensíveis", () => {
     expect(JSON.stringify(d.event)).not.toMatch(/morrer/);
   });
 
-  it("modo cuidado dura 24 h", () => {
+  it("modo cuidado dura 1 h", () => {
     const d = decideFromLlmSignal("web", NOW);
     expect(d.sensitive && d.source).toBe("llm");
     if (!d.sensitive) return;
-    expect(inCareMode(d.careModeUntil, new Date(NOW.getTime() + 23 * 3600_000))).toBe(true);
-    expect(inCareMode(d.careModeUntil, new Date(NOW.getTime() + 25 * 3600_000))).toBe(false);
+    expect(inCareMode(d.careModeUntil, new Date(NOW.getTime() + 50 * 60_000))).toBe(true);
+    expect(inCareMode(d.careModeUntil, new Date(NOW.getTime() + 70 * 60_000))).toBe(false);
     expect(inCareMode(null, NOW)).toBe(false);
   });
 

@@ -8,14 +8,15 @@ import type { MentoriaDraft, MentoriaRole } from "../db/repo";
 import { fallbackContent, type Content } from "../services/content";
 import { MENU_BUTTON_ID, MENU_FALLBACKS, menuReply } from "../services/menu";
 import { buildButtons } from "../whatsapp/builders";
+import { typedOption } from "../whatsapp/choices";
 import type { IncomingMessage } from "../whatsapp/types";
 import { checkSubject, parseOccurredOn, yesterdayOf } from "./parse";
 import {
-  DATE_OTHER_ID, DATE_TODAY_ID, DATE_YESTERDAY_ID, MENTORIA_TEXTS as T, PARTNER_OTHER_ID, PARTNER_PICK_PREFIX,
+  DATE_OTHER_ID, DATE_TODAY_ID, EARLY_NO_ID, EARLY_YES_ID, DATE_YESTERDAY_ID, MENTORIA_TEXTS as T, PARTNER_OTHER_ID, PARTNER_PICK_PREFIX,
   ROLE_MENTORADO_ID, ROLE_MENTOR_ID,
 } from "./texts";
 
-export const MENTORIA_STATES = ["MENT_ROLE", "MENT_SUBJECT", "MENT_DATE", "MENT_DATE_TEXT", "MENT_PARTNER"] as const;
+export const MENTORIA_STATES = ["MENT_ROLE", "MENT_SUBJECT", "MENT_DATE", "MENT_DATE_TEXT", "MENT_PARTNER", "MENT_EARLY_CONFIRM"] as const;
 export const isMentoriaState = (s: string): boolean => (MENTORIA_STATES as readonly string[]).includes(s);
 
 /** Resultado da busca do parceiro (feita pelo motor, com I/O, antes de chamar decideMentoria). */
@@ -40,6 +41,8 @@ export type MentoriaEffect =
   | { kind: "subject"; subject: string }
   | { kind: "date"; occurredOn: string }
   | { kind: "complete"; audioId: string; role: MentoriaRole; subject: string; occurredOn: string; partnerHash: string; partnerName: string | null }
+  /** Áudio antes do horário e a pessoa confirmou que a mentoria já aconteceu: completa com os dados do match. */
+  | { kind: "early_confirm"; audioId: string }
   | { kind: "cancel"; audioId: string | null };
 export type MentoriaDecision = Decision & { effect?: MentoriaEffect };
 
@@ -50,6 +53,18 @@ export function roleQuestion(): Reply {
   return buildButtons(T.askRole, [
     { id: ROLE_MENTOR_ID, title: T.roleMentor }, { id: ROLE_MENTORADO_ID, title: T.roleMentorado },
   ]);
+}
+/** Resposta única ao áudio guardado: avisa que a mentoria foi registrada e já faz a primeira pergunta (R2: 1 resposta por entrada). */
+export function audioSavedQuestion(): Reply {
+  return buildButtons(T.askRoleAfterAudio, [
+    { id: ROLE_MENTOR_ID, title: T.roleMentor }, { id: ROLE_MENTORADO_ID, title: T.roleMentorado },
+  ]);
+}
+export function earlyQuestion(): Reply {
+  return buildButtons(T.askEarly, [{ id: EARLY_YES_ID, title: T.earlyYes }, { id: EARLY_NO_ID, title: T.earlyNo }]);
+}
+export function savedFromMatchReply(c: Content = fallbackContent): Reply {
+  return buildButtons(T.savedFromMatch, [{ id: MENU_BUTTON_ID, title: c.text("menuButtonLabel", MENU_FALLBACKS.menuButtonLabel, 20) }]);
 }
 export function dateQuestion(): Reply {
   return buildButtons(T.askDate, [
@@ -82,6 +97,7 @@ export function mentoriaPrompt(state: string): Reply | undefined {
     case "MENT_DATE": return dateQuestion();
     case "MENT_DATE_TEXT": return text(T.askDateText);
     case "MENT_PARTNER": return text(T.askPartner);
+    case "MENT_EARLY_CONFIRM": return earlyQuestion();
     default: return undefined;
   }
 }
@@ -127,6 +143,16 @@ export function decideMentoria(
     return finish(user, { ...user, hintSentInState: true }, [prompt], counters, "hint");
   }
 
+  // Número digitado ("1", "opção 2") vale pelos botões do ESTADO, mesmo sem opções pendentes (que expiram ou são apagadas).
+  if (input.type === "text") {
+    const options: { id: string; title: string }[] = user.state === "MENT_ROLE" ? [{ id: ROLE_MENTOR_ID, title: T.roleMentor }, { id: ROLE_MENTORADO_ID, title: T.roleMentorado }]
+      : user.state === "MENT_DATE" ? [{ id: DATE_TODAY_ID, title: T.dateToday }, { id: DATE_YESTERDAY_ID, title: T.dateYesterday }, { id: DATE_OTHER_ID, title: T.dateOther }]
+      : user.state === "MENT_EARLY_CONFIRM" ? [{ id: EARLY_YES_ID, title: T.earlyYes }, { id: EARLY_NO_ID, title: T.earlyNo }]
+      : [];
+    const hit = typedOption(input.body, options);
+    if (hit) input = { wamid: input.wamid, from: input.from, ...(input.timestamp !== undefined ? { timestamp: input.timestamp } : {}), type: "button_reply", id: hit.id, title: hit.title };
+  }
+
   switch (user.state) {
     case "MENT_ROLE": {
       const role = input.type === "button_reply"
@@ -157,6 +183,15 @@ export function decideMentoria(
         date = r.date;
       } else return silent();
       return withEffect(go("MENT_PARTNER", text(T.askPartner)), { kind: "date", occurredOn: date });
+    }
+    case "MENT_EARLY_CONFIRM": {
+      const said = input.type === "button_reply"
+        ? (input.id === EARLY_YES_ID ? "yes" : input.id === EARLY_NO_ID ? "no" : null)
+        : input.type === "text" ? (intents.has("yes") ? "yes" : intents.has("no") ? "no" : null) : null;
+      if (said === "yes") return withEffect(go("AWAIT_AUDIO", savedFromMatchReply(content)), { kind: "early_confirm", audioId: d.audioId });
+      // Não: o áudio é ignorado e apagado (R6), sem perguntar mais nada.
+      if (said === "no") return withEffect(go("AWAIT_AUDIO", text(T.earlyDiscarded)), { kind: "cancel", audioId: d.audioId });
+      return input.type === "text" ? hintOnce(T.hintEarly) : silent();
     }
     case "MENT_PARTNER": {
       const p = ctx.partner;

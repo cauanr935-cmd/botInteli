@@ -62,13 +62,13 @@ describe("adv etapa 4", () => {
   });
   it("fallback com limites padrão (4/10min): fluxo feliz completa", async () => {
     const s = setup();
-    for (const x of [t("oi"), btn("consent_yes"), t("Maria da Silva"), t("Turma 12")]) await s.feed(x);
-    expect(s.graph).toHaveBeenCalledTimes(4);
-    expect((await s.repo.getConversation(WA)).state).toBe("REG_PROFILE_AUDIO");
+    for (const x of [t("oi"), btn("consent_yes"), t("Maria da Silva"), t("Turma 12"), t("20")]) await s.feed(x);
+    expect(s.graph).toHaveBeenCalledTimes(4); // limite de 4 envios em 10 min: o 5º (curiosidades) fica sem resposta
+    expect((await s.repo.getConversation(WA)).state).toBe("REG_AGE");
   });
   it("fallback com 1 dica no meio e limites padrão: nunca excede 4 envios e não grava registro incompleto como completo", async () => {
     const s = setup();
-    for (const x of [t("oi"), btn("consent_yes"), t("12345"), t("Maria da Silva"), t("Turma 12"), audio()]) await s.feed(x);
+    for (const x of [t("oi"), btn("consent_yes"), t("12345"), t("Maria da Silva"), t("Turma 12"), t("20"), audio()]) await s.feed(x);
     expect(s.graph.mock.calls.length).toBeLessThanOrEqual(4);
     const r = await s.repo.getRegistration(WA);
     if (r.registeredAt) expect(r.values.full_name).toBe("Maria da Silva");

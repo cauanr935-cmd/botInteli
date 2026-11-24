@@ -14,12 +14,18 @@ export type State =
   | "AWAIT_REGISTRATION"
   | "REG_CONSENT"
   | "REG_NAME_CONFIRM"
+  | "REG_AGE"
   | "REG_PROFILE_AUDIO"
   | `REG_FIELD_${string}`
   | "MENU"
   | "AVAILABILITY_TEXT"
   | `SCHED_DAYS_${string}`
   | `SCHED_HOURS_${string}`
+  | `SCHED_CONFIRM_${string}`
+  | "MATCH_MENTOR_ACCEPT"
+  | "MATCH_MENTEE_PICK"
+  | "MATCH_MENTEE_TIME"
+  | "MATCH_MENTEE_PLACE"
   | "AWAIT_AUDIO"
   | "PROCESSING_AUDIO"
   | "MENT_ROLE"
@@ -27,12 +33,15 @@ export type State =
   | "MENT_DATE"
   | "MENT_DATE_TEXT"
   | "MENT_PARTNER"
+  | "MENT_EARLY_CONFIRM"
   | "PROFILE_ROLE"
   | "MENTOR_CATEGORIES"
   | "MENTOR_CATEGORIES_BOTH"
+  | "REMOVE_CATEGORIES"
   | "RETURNING_CHOICE"
   | "DOUBT_ASK"
   | "DOUBT_TEXT"
+  | "SWITCH_DOUBT"
   | "COMPLETED"
   | "OPTED_OUT";
 
@@ -220,7 +229,8 @@ export function decide(
   }
 
   // Escolha na lista do menu: serviço com áudio -> instrução (AWAIT_AUDIO); sem áudio -> resposta pronta.
-  if (user.state === "MENU" && input.type === "list_reply") {
+  // (a resposta numérica "3" chega como button_reply: vale igual quando o id é de uma linha do menu)
+  if (user.state === "MENU" && (input.type === "list_reply" || (input.type === "button_reply" && findService(content, input.id)))) {
     const svc = findService(content, input.id);
     if (!svc) return silent(); // linha desconhecida/inativa: silêncio
     if (svc.requiresAudio) {

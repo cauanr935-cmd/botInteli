@@ -7,7 +7,7 @@ export const MENU_ROW_PREFIX = "svc_";
 export const MENU_BUTTON_ID = "menu";
 
 export const MENU_FALLBACKS = {
-  menu: "Menu de serviços: escolha uma opção. Para parar de receber mensagens, envie *sair*.",
+  menu: "Menu de serviços: digite o número da opção. Para parar de receber mensagens, envie *sair*.",
   menuButton: "Ver serviços",
   menuSection: "Serviços",
   menuButtonLabel: "Menu",

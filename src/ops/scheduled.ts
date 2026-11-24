@@ -1,4 +1,4 @@
-// Cron diário (Etapa 7). Nunca envia mensagem (R1): só mantém o banco ativo, limpa e registra o uso do limitador anti-flood.
+// Cron diário (Etapa 7). Nunca envia mensagem (o aviso dos nomes é outro cron, de 1 em 1 min: matching/reminder.ts): só mantém o banco ativo, limpa e registra o uso do limitador anti-flood.
 import { dayKey } from "../budget/month";
 import type { AudioStore } from "../audio/storage";
 import type { Repo } from "../db/repo";

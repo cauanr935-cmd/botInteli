@@ -69,6 +69,15 @@ describe("cliente do Grok", () => {
     };
     const g = loadConfig({ ...base, XAI_API_KEY: "gsk_abc" }); // o segredo antigo com chave do Groq passa a funcionar
     expect(g).toMatchObject({ aiApiKey: "gsk_abc", aiBaseUrl: "https://api.groq.com/openai/v1", aiModel: "openai/gpt-oss-120b" });
+    const gm = loadConfig({ ...base, AI_API_KEY: "AIzaSyAbc", XAI_BASE_URL: "https://api.x.ai/v1", XAI_MODEL: "grok-4" }); // nomes antigos da xAI não valem para o Gemini
+    expect(gm).toMatchObject({ aiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", aiModel: "gemini-flash-latest" });
+    // Gemini vence quando existe em qualquer nome; sobras de Groq em AI_MODEL/AI_BASE_URL não quebram o Gemini.
+    const win = loadConfig({ ...base, AI_API_KEY: "gsk_velha", GEMINI_API_KEY: "AIzaNova", AI_MODEL: "openai/gpt-oss-120b", AI_BASE_URL: "https://api.groq.com/openai/v1" });
+    expect(win).toMatchObject({ aiApiKey: "AIzaNova", aiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", aiModel: "gemini-flash-latest" });
+    expect(loadConfig({ ...base, GROQ_API_KEY: "gsk_a", XAI_API_KEY: "AIzaB" }).aiApiKey).toBe("AIzaB");
+    expect(loadConfig({ ...base, AI_API_KEY: "AIzaC", AI_MODEL: "gemini-2.5-pro" }).aiModel).toBe("gemini-2.5-pro"); // modelo do Gemini escolhido vale
+    const novo = loadConfig({ ...base, AI_API_KEY: "AQ.Ab8RN6xyz" }); // chaves novas do Google começam com "AQ."
+    expect(novo).toMatchObject({ aiApiKey: "AQ.Ab8RN6xyz", aiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", aiModel: "gemini-flash-latest" });
     const x = loadConfig({ ...base, AI_API_KEY: "xai-abc" });
     expect(x).toMatchObject({ aiBaseUrl: "https://api.x.ai/v1", aiModel: "grok-4" });
     expect(loadConfig({ ...base, AI_API_KEY: "gsk_abc", AI_MODEL: "outro", AI_BASE_URL: "https://z.example/v1" })).toMatchObject({ aiModel: "outro", aiBaseUrl: "https://z.example/v1" });
@@ -143,7 +152,7 @@ describe("IA intervém no bot", () => {
     await s.text(p, "oi"); s.advance(1000);
     await s.text(p, "quero dar mentoria também sobre computação"); s.advance(1000);
     expect((await s.repo.getConversation(p)).state).toBe("RETURNING_CHOICE");
-    expect(lastBody(s, p)).toMatch(/Toque em/);
+    expect(lastBody(s, p)).toMatch(/Digite/);
   });
 
   it("comandos que o bot já entende (sair, menu, oi, sim, não) nunca consultam a IA; 'sair' sempre vale", async () => {
@@ -176,7 +185,7 @@ describe("IA intervém no bot", () => {
     await s.text(p, "quero participar do programa"); s.advance(1000); // REG_CONSENT: texto qualquer
     await s.button(p, "consent_yes"); s.advance(1000);
     await s.text(p, "Maria da Silva"); s.advance(1000);
-    await s.text(p, "Turma 12"); s.advance(1000);
+    await s.text(p, "Turma 12"); s.advance(1000); await s.text(p, "20"); s.advance(1000);
     await s.text(p, "nasci em 1999"); s.advance(1000); // REG_PROFILE_AUDIO: texto
     expect(calls).toHaveLength(0);
   });
@@ -332,7 +341,7 @@ describe("IA responde só sobre o programa", () => {
     const s = mk(agent); const p = s.phone(32);
     await done(s, p);
     await s.text(p, "como calcular o rotacional de um campo?"); s.advance(1000);
-    expect(lastBody(s, p)).toMatch(/Toque em/);
+    expect(lastBody(s, p)).toMatch(/Digite/);
   });
   it("respeita o limite de mensagens por pessoa", async () => {
     const { agent } = faqAgent({ kind: "answer", text: "resposta" });
@@ -372,7 +381,7 @@ describe("base de conhecimento (RAG) da Be My Mentor", () => {
     expect(sent.messages[1]!.content).toContain("para que vocês usam meus dados?");
   });
   it("a base cobre os 5 assuntos dos fundadores", () => {
-    for (const t of [/conecta estudantes universit/i, /iniciação científica/i, /fase de validação/i, /horas complementares/i, /blockchain/i, /diarização/i, /nunca responde dúvidas|nunca responde/i, /88 99289-5332/]) {
+    for (const t of [/conecta estudantes universit/i, /iniciação científica/i, /fase de validação/i, /horas complementares/i, /carimbo de tempo/i, /diarização/i, /nunca responde dúvidas|nunca responde/i, /88 99289-5332/]) {
       expect(BMM_KNOWLEDGE).toMatch(t);
     }
     expect(BMM_KNOWLEDGE.length).toBeLessThan(4000); // cabe inteira no prompt
@@ -401,9 +410,7 @@ describe("nome e turma no cadastro", () => {
     await s.button(p, "name_no"); s.advance(1000);
     expect(lastBody(s, p)).toBe("Tudo bem! Qual é o seu nome completo?");
     expect((await s.repo.getConversation(p)).state).toBe("REG_FIELD_full_name");
-    await s.text(p, "Baralho da Silva"); s.advance(1000);
-    expect((await s.repo.getConversation(p)).state).toBe("REG_NAME_CONFIRM");
-    await s.button(p, "name_yes"); s.advance(1000);
+    await s.text(p, "Baralho da Silva"); s.advance(1000); // segunda tentativa estranha: o fluxo segue sem perguntar de novo
     expect(lastBody(s, p)).toMatch(/turma/i);
     expect((await s.repo.getConversation(p)).state).toBe("REG_FIELD_class_name");
     expect((await s.repo.getRegistration(p)).values.full_name).toBe("Baralho da Silva");
@@ -457,7 +464,7 @@ describe("nome e turma no cadastro", () => {
     expect((await s.repo.getConversation(p)).state).toBe("REG_FIELD_class_name");
     await s.text(p, "T27"); s.advance(1000);
     expect((await s.repo.getRegistration(p)).values.class_name).toBe("T27");
-    expect((await s.repo.getConversation(p)).state).toBe("REG_PROFILE_AUDIO");
+    expect((await s.repo.getConversation(p)).state).toBe("REG_AGE");
   });
   it("validClassName: aceita formatos variados com número e recusa só letras", async () => {
     const { validClassName } = await import("../src/registration/fields");

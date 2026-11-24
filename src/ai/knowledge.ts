@@ -24,14 +24,14 @@ A plataforma é restrita ao meio acadêmico:
 ## 4. Privacidade e dados
 - Os dados gerados nas mentorias de hoje são usados única e exclusivamente para a validação e emissão de horas complementares.
 - Os dados dos usuários e das mentorias não são comercializados e não são compartilhados com terceiros sob nenhuma hipótese. É uma garantia direta dos fundadores.
-- Para o serviço funcionar, usamos prestadores que tratam os dados sob nossas instruções (WhatsApp/Meta, hospedagem e banco de dados, provedor de inteligência artificial, transcrição e blockchain), e a instituição de ensino recebe os registros necessários para validar as horas complementares. Os detalhes (dados coletados, prazos, direitos da LGPD como acessar, corrigir ou apagar os dados) estão nos Termos de Uso e na Política de Privacidade, cujo link é enviado no cadastro. Para pedir acesso ou exclusão, a pessoa fala com o Contato.
+- Para o serviço funcionar, usamos prestadores que tratam os dados sob nossas instruções (WhatsApp/Meta, hospedagem e banco de dados, provedores de inteligência artificial (Groq e xAI, que recebem só o texto das mensagens; por isso não se deve escrever dados sensíveis no texto livre)). A transcrição e a análise das gravações rodam em equipamento da própria equipe, e a instituição de ensino só recebe o certificado que o próprio aluno decidir levar a ela. Os detalhes (dados coletados, prazos, direitos da LGPD como acessar, corrigir ou apagar os dados) estão nos Termos de Uso e na Política de Privacidade, cujo link é enviado no cadastro. Para pedir acesso ou exclusão, a pessoa fala com o Contato.
 
 ## 5. Como funciona a validação das horas complementares
 1. Os áudios das mentorias são armazenados em um bucket.
 2. Um analisador de áudio integrado ao bot busca esses arquivos.
 3. O sistema transcreve o áudio e faz a diarização (identifica qual usuário falou cada parte).
-4. As transcrições são enviadas para uma blockchain.
-5. A blockchain garante registros imutáveis, o que dá estabilidade à rede e total confiabilidade e transparência para a instituição de ensino na hora de validar as horas complementares.
+4. A equipe faz a conferência final de toda sessão antes de contar horas.
+5. É emitido um certificado de horas complementares, com registro e carimbo de tempo verificáveis (só códigos, sem dados pessoais), que o aluno decide submeter à sua instituição de ensino.
 
 ## 6. Como usar o bot hoje
 - Cadastro: nome completo, turma (as turmas têm número, como T27, T26, T24) e um áudio de apresentação.

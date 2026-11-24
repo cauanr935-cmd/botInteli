@@ -1,6 +1,7 @@
 // Simulador ponta a ponta (Etapa 8). Sem rede: transporte falso que conta envios, banco em memória,
 // R2 e analisador falsos, relógio controlável. Usa a mesma fiação de produção (route -> webhook ->
 // createEventHandler -> motor -> sendGuarded). Executado pelos testes: `npm run simulate`.
+import type { StickerPicker } from "../src/whatsapp/stickers";
 import type { IntentAgent } from "../src/ai/agent";
 import { MemoryRepo } from "../src/db/memory-repo";
 import { route, type AppDeps } from "../src/index";
@@ -13,7 +14,7 @@ import { TOKEN as WEBHOOK_TOKEN, upsert } from "../tests/helpers/evolution";
 import { dayKey } from "../src/budget/month";
 import { UNLOCK_CONFIRM } from "../src/admin/budget";
 import type { Logger, LogLevel } from "../src/lib/logger";
-import type { MediaClient } from "../src/whatsapp/client";
+import { sendGuarded, type MediaClient } from "../src/whatsapp/client";
 import { asTransport } from "../tests/helpers/transport";
 
 const ADMIN_TOKEN = "sim-admin";
@@ -26,6 +27,8 @@ export interface SimOptions {
   env?: Record<string, string>;
   /** Agente de IA falso (testes): sem rede. */
   agent?: IntentAgent;
+  /** Figurinhas de resposta (testes): sem isto, figurinha e imagem seguem sem resposta. */
+  stickers?: StickerPicker;
   /** Entrega cada webhook duas vezes (a Evolution pode reenviar). */
   duplicateAll?: boolean;
 }
@@ -77,10 +80,21 @@ export class Simulator {
     };
     this.deps = {
       webhookToken: WEBHOOK_TOKEN, repo: this.repo, logger, now: () => this.now(),
+      // Mesma fiação de produção: a IA também entende a opção escrita por extenso (etapa do webhook) e o "não entendi" sai pelo sendGuarded.
+      ...(o.agent ? {
+        agent: o.agent,
+        sendText: async (to: string, body: string) => {
+          await sendGuarded({ to, type: "text", text: { body } }, {
+            repo: this.repo, logger, phoneNumberId: INSTANCE, evolutionUrl: this.cfg.evolutionUrl, evolutionApiKey: this.cfg.evolutionApiKey,
+            evolutionInstance: INSTANCE, stopAt: this.cfg.stopAt, timezone: this.cfg.timezone, transport: asTransport(graph as never), now: () => this.now(),
+          });
+        },
+      } : {}),
       onEvent: createEventHandler(this.cfg, {
         repo: this.repo, logger, content, transport: asTransport(graph as never), now: () => this.now(),
         audio: { media, store: this.store, analyzer: this.analyzer },
         ...(o.agent ? { agent: o.agent } : {}),
+        ...(o.stickers ? { stickers: o.stickers } : {}),
       }),
       admin: {
         adminToken: ADMIN_TOKEN, repo: this.repo, logger, phoneNumberId: INSTANCE,
@@ -141,6 +155,7 @@ export class Simulator {
     return this.message(from, { contactsArrayMessage: { contacts: vcards.map((vcard) => ({ displayName: "Fulano", vcard })) } });
   }
   sticker(from: string) { return this.message(from, { stickerMessage: {} }); }
+  image(from: string) { return this.message(from, { imageMessage: { mimetype: "image/jpeg" } }); }
   async unlock(): Promise<number> {
     const res = await route(new Request(`https://bot.sim.invalid/admin/budget/unlock?confirm=${UNLOCK_CONFIRM}`, {
       method: "POST", headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
@@ -154,6 +169,7 @@ export class Simulator {
     await this.button(p, "consent_yes"); this.advance(step);
     await this.text(p, "Maria da Silva"); this.advance(step);
     await this.text(p, "Turma 12"); this.advance(step);
+    await this.text(p, "20"); this.advance(step);
     await this.audio(p); this.advance(step);
     await this.button(p, "prof_mentorado"); this.advance(step);
     await this.button(p, "doubt_no"); this.advance(step);
@@ -173,7 +189,7 @@ export async function runS1(): Promise<Metrics> {
   const N = 400;
   const stages: ((p: string) => Promise<unknown>)[] = [
     (p) => s.text(p, "oi"), (p) => s.button(p, "consent_yes"), (p) => s.text(p, "Maria da Silva"),
-    (p) => s.text(p, "Turma 12"), (p) => s.audio(p),
+    (p) => s.text(p, "Turma 12"), (p) => s.text(p, "20"), (p) => s.audio(p),
   ];
   let cutAt = -1;
   let afterCut = 0;

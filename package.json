@@ -7,6 +7,7 @@
     "dev": "wrangler dev",
     "build": "wrangler deploy --dry-run --outdir dist",
     "simulate": "vitest run tests/simulation.test.ts",
+    "stickers": "node scripts/stickers-index.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

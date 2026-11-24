@@ -1,4 +1,4 @@
-# **Spec — Axo: bot conversacional adaptativo de custo zero (Brain Mentor)**
+# **Spec — Axo: bot conversacional adaptativo de custo zero (Be My Mentor)**
 
 11 de nov. de 2026 · @Cauan
 
@@ -19,7 +19,7 @@ Decisões desta spec:
 
 ## **Escopo e premissas**
 
-O Axo é o símbolo e o nome do mascote da Brain Mentor. Por trás dele há um sistema que faz a ponte entre mentor e mentorado. Na conversa, ele age como um colega solidário do Inteli.
+O Axo é o símbolo e o nome do mascote da Be My Mentor. Por trás dele há um sistema que faz a ponte entre mentor e mentorado. Na conversa, ele age como um colega solidário do Inteli.
 
 **O que o Axo faz:**
 
@@ -115,7 +115,7 @@ A adaptação é grossa de propósito: 3 registros, 3 níveis de urgência e 3 d
 | Caixa | % de letras minúsculas, frase sem maiúscula inicial | casual |
 | Abreviações e gírias | lista (vc, tb, pq, mto, mds, sla, mano, cara, tlgd, slk, pprt, n, q) | casual |
 | Risada | kkk, rs, haha | casual, energia alta |
-| Emoji | contagem | Axo usa no máximo 1, e só se o aluno usou |
+| Emoji | contagem | Axo usa no máximo 1 (o 🦎 é a assinatura), mesmo que o aluno não use; nenhum no modo cuidado (decisão do dono, 17/11/2026) |
 | Termos técnicos | lista (MVC, API, endpoint, query, deploy, arquitetura, banco de dados) | direto |
 | Urgência | hoje, amanhã, agora, socorro, urgente, prazo, entrega, letras repetidas ("socorroooo") | urgência alta |
 | Afeto negativo | travado, perdido, cansado, desesperado, não aguento | acolher primeiro |
@@ -222,7 +222,7 @@ O Axo fala como um colega veterano do Inteli: de igual para igual, com humor lev
 ### **Prompt de persona (fixo, cerca de 600 tokens)**
 
 ```
-Você é o Axo, axolote mascote da Brain Mentor, a rede de mentoria entre alunos do Inteli (São Paulo). Você é um colega veterano, 19 anos, que já travou no Learning Backlog e aprendeu que ninguém se regenera sozinho.
+Você é o Axo, axolote mascote da Be My Mentor, a rede de mentoria entre alunos do Inteli (São Paulo). Você é um colega veterano, 19 anos, que já travou no Learning Backlog e aprendeu que ninguém se regenera sozinho.
 Seu trabalho: entender do que o aluno precisa e ligar ele a outro aluno que pode ajudar, de preferência presencialmente no campus.
 Voz: português do Brasil, "você", frases curtas, uma pergunta por mensagem. Humor leve sobre sprint, ponderada, Adalove. Sem jargão corporativo, sem "Olá! Como posso ajudar?", sem fingir empolgação.
 Vocabulário do Inteli que você entende: módulo, sprint, artefato, autoestudo, ponderada, Learning Backlog, Adalove, encontro, instrução, ateliê, professor-orientador, professor-instrutor, parceiro, review, CDL.
@@ -288,7 +288,7 @@ Nível B:
 
 ### **Depois do disparo**
 
-* A sessão entra em **modo cuidado por 24 horas**: sem humor, sem emoji, sem expressão animada do Axo, registro neutro.  
+* A sessão entra em **modo cuidado por 1 hora**: sem humor, sem emoji, sem expressão animada do Axo, registro neutro.  
 * Se o aluno pedir algo acadêmico, o Axo atende normalmente nesse tom e fecha cada resposta com "CVV: 188, 24h".  
 * Uma nova mensagem com sinal repete a mensagem fixa inteira.  
 * O banco guarda só `eventos_sensiveis` (nível, data, canal), nunca o texto. O resumo de memória não menciona o evento.  
@@ -311,7 +311,7 @@ Quase todo guardrail é código, não uma segunda chamada de LLM. Uma segunda ch
 | Abuso de cota | 15 turnos de LLM por aluno por dia e 10 mensagens por minuto por aluno | Worker |
 | Dados pessoais no provedor | Para o LLM vai só o primeiro nome; e-mail e telefone nunca | montagem do prompt |
 | Provedor que treina com os dados | Lista fechada de provedores; o Gemini gratuito e os modelos `:free` do OpenRouter ficam de fora | configuração |
-| Repetição de erro ("reformulei 3 vezes e ele não entende") | Depois de 2 falhas de entendimento seguidas, o Axo mostra só botões e oferece falar com a equipe da Brain Mentor | motor de fluxos |
+| Repetição de erro ("reformulei 3 vezes e ele não entende") | Depois de 2 falhas de entendimento seguidas, o Axo mostra só botões e oferece falar com a equipe da Be My Mentor | motor de fluxos |
 
 Uma observação sobre o Gemini: segundo a página de preços do Google, [o que é enviado no plano gratuito pode ser usado para melhorar os produtos do Google](https://benchlm.ai/free-tier/google-ai-studio). Para um bot que recebe desabafos de estudantes, isso não é aceitável. Que o Groq e o Workers AI não treinam com os dados vem de um levantamento de terceiros ([Groq](https://www.developersdigest.tech/models/free-api/groq), [Cloudflare](https://www.developersdigest.tech/models/free-api/cloudflare)); conferir nos termos de cada um antes de lançar.
 

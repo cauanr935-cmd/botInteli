@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Simulator, MINUTE } from "../scripts/simulate";
+import { hashWaId } from "../src/lib/hash";
 import { PROFILE_TEXTS as T } from "../src/profile/texts";
 import { categoriesListReply } from "../src/profile/decide";
 import { CATEGORIES, categoriesPrompt, classifyDoubt, parseCategories } from "../src/profile/categories";
@@ -21,7 +22,7 @@ async function toRole(s: Simulator, p: string) {
   await s.text(p, "oi"); s.advance(1000);
   await s.button(p, "consent_yes"); s.advance(1000);
   await s.text(p, "Maria da Silva"); s.advance(1000);
-  await s.text(p, "T12"); s.advance(1000);
+  await s.text(p, "T12"); s.advance(1000); await s.text(p, "20"); s.advance(1000);
   await s.audio(p); s.advance(1000);
 }
 
@@ -51,7 +52,7 @@ describe("perfil: áudio, papel, áreas e dúvida", () => {
     await s.button(p, "prof_mentorado"); s.advance(1000);
     expect(lastBody(s, p)).toBe(T.askDoubt);
     await s.button(p, "doubt_no"); s.advance(1000);
-    expect(lastBody(s, p)).toBe("Muito obrigado por se cadastrar e até uma próxima.");
+    expect(lastBody(s, p)).toMatch(/^Parabéns, você finalizou o cadastro![\s\S]*faz parte da nossa rede[\s\S]*Muito obrigado por se cadastrar e até uma próxima\.$/);
     expect((await s.repo.getConversation(p)).state).toBe("COMPLETED");
     const reg = await s.repo.getRegistration(p);
     expect(reg.profileRole).toBe("mentorado");
@@ -113,6 +114,21 @@ describe("perfil: áudio, papel, áreas e dúvida", () => {
     expect((await s.repo.getConversation(p)).state).toBe("MENTOR_CATEGORIES");
   });
 
+  it("áreas escritas do jeito que as pessoas escrevem: vírgula, 'e', barra, apelido e erro de digitação", () => {
+    const k = (t: string) => parseCategories(t);
+    expect(k("computação, matemática")).toEqual(["computacao", "matematica"]);
+    expect(k("Computação,Matemática")).toEqual(["computacao", "matematica"]);
+    expect(k("computacao / matematica.")).toEqual(["computacao", "matematica"]);
+    expect(k("Computação\nMatemática")).toEqual(["computacao", "matematica"]);
+    expect(k("comp, mat")).toEqual(["computacao", "matematica"]);
+    expect(k("programação e cálculo")).toEqual(["computacao", "matematica"]);
+    expect(k("computaçao e matematca")).toEqual(["computacao", "matematica"]);
+    expect(k("liderança, negócios, ux")).toEqual(["lideranca", "negocios", "design"]);
+    expect(k("monitoria e iniciação científica")).toEqual(["vida_academica"]);
+    expect(k("quero ajudar em tudo")).toEqual([]);
+    expect(k("bom dia")).toEqual([]);
+  });
+
   it("mentor: ainda aceita áreas digitadas (números ou nomes) como alternativa", async () => {
     const s = mk(); const p = s.phone(9);
     await toRole(s, p);
@@ -149,7 +165,7 @@ describe("perfil: áudio, papel, áreas e dúvida", () => {
 
   it("curiosidades por texto também valem: guarda o texto e segue para o papel (sem áudio)", async () => {
     const s = mk(); const p = s.phone(7);
-    await s.text(p, "oi"); await s.button(p, "consent_yes"); await s.text(p, "Maria da Silva"); await s.text(p, "T12");
+    await s.text(p, "oi"); await s.button(p, "consent_yes"); await s.text(p, "Maria da Silva"); await s.text(p, "T12"); await s.text(p, "20");
     expect(lastBody(s, p)).toMatch(/Pode gravar um áudio ou, se preferir, escrever/);
     await s.text(p, "Nasci em 12/03/2003, torço pro Fortaleza, gosto de vôlei e de jogar xadrez"); s.advance(1000);
     expect(lastBody(s, p)).toBe(T.askRole);
@@ -158,15 +174,15 @@ describe("perfil: áudio, papel, áreas e dúvida", () => {
     expect(s.repo.audios.size).toBe(0); // nenhum áudio foi guardado
   });
 
-  it("texto curto ou só um comando não vale: 1 dica e silêncio; o áudio continua valendo", async () => {
+  it("texto curto ou só um comando não vale: 1 dica e depois um aviso de não entendi; o áudio continua valendo", async () => {
     const s = mk(); const p = s.phone(11);
-    await s.text(p, "oi"); await s.button(p, "consent_yes"); await s.text(p, "Maria da Silva"); await s.text(p, "T12");
+    await s.text(p, "oi"); await s.button(p, "consent_yes"); await s.text(p, "Maria da Silva"); await s.text(p, "T12"); await s.text(p, "20");
     const n = s.sentTo(p).length;
     await s.text(p, "futebol"); s.advance(1000);
     expect(lastBody(s, p)).toMatch(/em um áudio ou em um texto/);
     await s.text(p, "oi"); s.advance(1000);
     await s.text(p, "menu"); s.advance(1000);
-    expect(s.sentTo(p).length).toBe(n + 1);
+    expect(s.sentTo(p).length).toBe(n + 2); // dica + aviso "não entendi" para o "menu" (o "oi" repetido continua mudo)
     expect((await s.repo.getConversation(p)).state).toBe("REG_PROFILE_AUDIO");
     expect((await s.repo.getRegistration(p)).profileAbout).toBeUndefined();
     await s.audio(p); s.advance(1000);
@@ -317,3 +333,58 @@ describe("quem já é cadastrado volta a falar", () => {
     for (const t of ["Como faço um join em SQL?", "Tenho uma dúvida sobre cálculo", "não consigo instalar o python"]) expect(isNoDoubt(t)).toBe(false);
   });
 });
+
+describe("papel: números e frases sem lista pendente", () => {
+  it.each([["2", "DOUBT_ASK"], ["opção 2", "DOUBT_ASK"], ["sou mentorado", "DOUBT_ASK"], ["1", "MENTOR_CATEGORIES"], ["3", "MENTOR_CATEGORIES_BOTH"], ["mentor e mentorado", "MENTOR_CATEGORIES_BOTH"]])(
+    "'%s' -> %s, mesmo sem pending_choices", async (txt, state) => {
+      const s = new Simulator();
+      const p = s.phone(71);
+      await s.repo.touchUser(p, s.now());
+      await s.repo.saveRegistration(p, { waIdHash: await hashWaId(p), consentAt: s.now(), termsVersion: "x", registeredAt: s.now(), values: { full_name: "Ana Souza" } });
+      await s.repo.saveConversation(p, 0, { state: "PROFILE_ROLE", previousState: null, hintSentInState: true, optedOutAt: null });
+      await s.repo.setPendingChoices(await hashWaId(p), null, s.now());
+      await s.text(p, txt); s.advance(30_000);
+      expect((await s.repo.getConversation(p)).state).toBe(state);
+    });
+});
+
+describe("retirar área (só por texto, sem botão no menu)", () => {
+  const toMentor = async (s: Simulator, p: string) => {
+    await toRole(s, p);
+    await s.button(p, "prof_mentor"); s.advance(1000);
+    await s.text(p, "computação, matemática e design"); s.advance(1000);
+    await doSchedule(s, p);
+    expect((await s.repo.getConversation(p)).state).toBe("COMPLETED");
+  };
+
+  it("o menu de volta não oferece 'retirar'", async () => {
+    const s = mk(); const p = s.phone(30);
+    await toMentor(s, p);
+    await s.text(p, "oi"); s.advance(1000);
+    expect(lastBody(s, p)).not.toMatch(/retirar/i);
+  });
+
+  it("'quero retirar uma matéria' lista as áreas atuais e retira a escolhida", async () => {
+    const s = mk(); const p = s.phone(31);
+    await toMentor(s, p);
+    await s.text(p, "quero retirar uma matéria"); s.advance(1000);
+    expect((await s.repo.getConversation(p)).state).toBe("REMOVE_CATEGORIES");
+    expect(listRowIds(s, p)).toEqual(["catrm_computacao", "catrm_matematica", "catrm_design"]);
+    await s.list(p, "catrm_matematica"); s.advance(1000);
+    expect(lastBody(s, p)).toMatch(/retirei Matemática.*Computação, Design/);
+    expect((await s.repo.getRegistration(p)).mentorCategories).toEqual(["computacao", "design"]);
+    expect((await s.repo.getConversation(p)).state).toBe("COMPLETED");
+  });
+
+  it("já dizendo qual área, retira direto; a última área não sai", async () => {
+    const s = mk(); const p = s.phone(32);
+    await toMentor(s, p);
+    await s.text(p, "quero tirar a área de design"); s.advance(1000);
+    expect((await s.repo.getRegistration(p)).mentorCategories).toEqual(["computacao", "matematica"]);
+    await s.text(p, "retirar disciplina matemática"); s.advance(1000);
+    await s.text(p, "retirar disciplina computação"); s.advance(1000);
+    expect(lastBody(s, p)).toBe(T.removeLast);
+    expect((await s.repo.getRegistration(p)).mentorCategories).toEqual(["computacao"]);
+  });
+});
+

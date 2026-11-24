@@ -11,21 +11,25 @@ SUPABASE_SERVICE_KEY=
 ANALYZER_API_URL=
 ANALYZER_API_KEY=
 ADMIN_TOKEN=
+# Números E.164 dos admins do matching (/duvidas, /mentores), separados por vírgula. Vazio = ninguém.
+ADMIN_WA_IDS=
 TIMEZONE=America/Sao_Paulo
 # Anti-flood (proteção contra banimento): teto de mensagens enviadas por dia pelo número. 0 = desligado; máximo 990.
 ANTI_FLOOD_MAX_PER_DAY=0
-MAX_BOT_MSGS_PER_USER_PER_DAY=12
-MAX_BOT_MSGS_PER_USER_PER_10MIN=4
+MAX_BOT_MSGS_PER_USER_PER_DAY=200
+MAX_BOT_MSGS_PER_USER_PER_10MIN=30
 # opcional
 PRIVACY_POLICY_URL=https://bot-whatsapp.bot-whatsaap-inteli.workers.dev/privacidade
 TERMS_VERSION=2025-01
-MAX_AUDIO_BYTES=16000000
-ANALYZER_TIMEOUT_MS=8000
 # Segredo do HMAC que gera o pessoa_id (telefone -> id). Mínimo 32 caracteres. Gere com: openssl rand -hex 32
 # Perder este valor quebra todas as ligações do banco e do R2: guarde um backup. Em produção: wrangler secret put PESSOA_ID_SECRET
 PESSOA_ID_SECRET=exemplo-ficticio-troque-por-openssl-rand-hex-32
+MAX_AUDIO_BYTES=16000000
+MAX_AUDIO_STREAM_BYTES=300000000
+MEDIA_URL_HOSTS=
+ANALYZER_TIMEOUT_MS=8000
 
-# IA: opcional. Sem chave o bot funciona só com as regras do código. Chave gsk_... = Groq; xai-... = xAI Grok.
+# IA: opcional. Sem chave o bot funciona só com as regras do código. Chave gsk_... = Groq; AIza... ou AQ.... = Google Gemini (gratuito, AI Studio); xai-... = xAI Grok.
 # (nomes antigos XAI_API_KEY / XAI_MODEL / XAI_BASE_URL também funcionam)
 AI_API_KEY=
 AI_MODEL=
@@ -35,3 +39,7 @@ AI_TIMEOUT_MS=6000
 # Modo admin do chat de teste (opcional; padrão no código)
 CHAT_ADMIN_USER=
 CHAT_ADMIN_PASS=
+# Guardrail de abertura da rede: até NETWORK_OPEN_AT (ISO com fuso) só dá para se cadastrar; pedir mentoria só para os números de
+# NETWORK_EARLY_ACCESS (separados por vírgula, DDD+número; o 55 e o 9º dígito são opcionais). Sem NETWORK_OPEN_AT = rede aberta.
+NETWORK_OPEN_AT=
+NETWORK_EARLY_ACCESS=
